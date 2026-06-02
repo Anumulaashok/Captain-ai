@@ -1,0 +1,41 @@
+# Environment & secrets — NEVER commit
+.env
+.env.local
+.env.production
+*.key
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+*.egg
+
+# Node / pnpm
+node_modules/
+.pnpm-store/
+captain-desktop/dist/
+
+# Rust / Tauri
+captain-desktop/src-tauri/target/
+
+# macOS
+.DS_Store
+*.dmg
+
+# Models & data (large binaries)
+captain-core/data/models/
+captain-core/data/whisper/
+captain-core/data/piper/
+
+# Logs
+*.log
+logs/

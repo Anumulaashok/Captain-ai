@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capabilities for Captain AI",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "shell:default",
+    "notification:default",
+    "process:allow-exit",
+    "process:allow-restart"
+  ]
+}

@@ -1,0 +1,82 @@
+import logging
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+from agents.registry import agent_registry
+from agents.base import AgentTask
+
+log = logging.getLogger(__name__)
+router = APIRouter()
+
+
+class AgentRunRequest(BaseModel):
+    message: str
+    context: dict = {}
+
+
+class PermissionUpdateRequest(BaseModel):
+    permissions: list[str]
+
+
+@router.get("/agents")
+async def list_agents():
+    return await agent_registry.list_with_status()
+
+
+@router.post("/agents/{agent_id}/enable")
+async def enable_agent(agent_id: str):
+    from db.database import AsyncSessionLocal
+    from db.models import AgentRecord
+    async with AsyncSessionLocal() as db:
+        rec = await db.get(AgentRecord, agent_id)
+        if not rec:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        rec.is_enabled = True
+        await db.commit()
+    return {"ok": True, "agent_id": agent_id}
+
+
+@router.post("/agents/{agent_id}/disable")
+async def disable_agent(agent_id: str):
+    from db.database import AsyncSessionLocal
+    from db.models import AgentRecord
+    async with AsyncSessionLocal() as db:
+        rec = await db.get(AgentRecord, agent_id)
+        if not rec:
+            raise HTTPException(status_code=404, detail="Agent not found")
+        rec.is_enabled = False
+        await db.commit()
+    return {"ok": True, "agent_id": agent_id}
+
+
+@router.post("/agents/{agent_id}/run")
+async def run_agent(agent_id: str, req: AgentRunRequest):
+    agent = agent_registry.get(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail=f"Agent not found: {agent_id}")
+    task = AgentTask(
+        agent_id=agent_id,
+        intent=f"{agent_id}_task",
+        user_message=req.message,
+        context=req.context,
+    )
+    result = await agent.run(task)
+    return result.dict()
+
+
+@router.post("/agents/{agent_id}/permissions")
+async def update_permissions(agent_id: str, req: PermissionUpdateRequest):
+    from security.permissions import permission_manager
+    from agents.base import Permission
+    for perm_str in req.permissions:
+        try:
+            perm = Permission(perm_str)
+            await permission_manager.grant(agent_id, perm)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid permission: {perm_str}")
+    return {"ok": True}
+
+
+@router.get("/agents/{agent_id}/permissions")
+async def get_permissions(agent_id: str):
+    from security.permissions import permission_manager
+    return {"permissions": await permission_manager.get_agent_permissions(agent_id)}
