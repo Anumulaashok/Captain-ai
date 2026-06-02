@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Send, Plus, Mic, MicOff, Trash2 } from "lucide-react";
+import { Send, Plus, Mic, MicOff, Trash2, Copy, Check } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import SyntaxHighlighter from "react-syntax-highlighter";
@@ -7,10 +7,29 @@ import { useChatStore } from "../store/chat";
 import { wsClient } from "../lib/ws";
 import { formatDistanceToNow } from "date-fns";
 
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const handleCopy = async () => {
+    await navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+  return (
+    <button
+      onClick={handleCopy}
+      className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded hover:bg-zinc-700 text-zinc-500 hover:text-zinc-300 flex-shrink-0"
+      title="Copy message"
+    >
+      {copied ? <Check size={13} className="text-green-400" /> : <Copy size={13} />}
+    </button>
+  );
+}
+
 function MessageBubble({ role, content }: { role: string; content: string }) {
   const isUser = role === "user";
   return (
-    <div className={`flex ${isUser ? "justify-end" : "justify-start"} mb-4`}>
+    <div className={`group flex items-end gap-1.5 ${isUser ? "justify-end" : "justify-start"} mb-4`}>
+      {!isUser && <CopyButton text={content} />}
       <div
         className={`max-w-[75%] rounded-2xl px-4 py-3 text-sm ${
           isUser
@@ -46,6 +65,7 @@ function MessageBubble({ role, content }: { role: string; content: string }) {
           </ReactMarkdown>
         )}
       </div>
+      {isUser && <CopyButton text={content} />}
     </div>
   );
 }
