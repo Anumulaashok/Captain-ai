@@ -15,7 +15,7 @@ DEFAULTS: dict[str, Any] = {
     "voice_enabled": False,
     "voice_mode": "wake_word",     # wake_word | push_to_talk | continuous | disabled
     "voice_tts_enabled": True,
-    "active_model": "qwen2.5:7b-instruct-q4_K_M",
+    "active_model": "",   # resolved at startup from Ollama
     "show_agent_activity": True,
     "notification_chat": True,
     "notification_agent_done": True,

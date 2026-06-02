@@ -120,6 +120,13 @@ export const api = {
     removeCloudKey: (service: string) => del(`/api/accounts/cloud-key/${service}`),
   },
 
+  modelRoles: {
+    get: () => get<Record<string, ModelRoleAssignment>>("/api/models/roles"),
+    set: (role: string, ollama_model_id: string) =>
+      put("/api/models/roles", { role, ollama_model_id }),
+    reset: (role: string) => del(`/api/models/roles/${role}`),
+  },
+
   voice: {
     setMode: (mode: string, conversationId?: string) =>
       post("/api/voice/mode", { mode, conversation_id: conversationId }),
@@ -163,6 +170,7 @@ export interface ModelEntry {
   id: string;
   name: string;
   provider: string;
+  ollama_id: string;
   size_gb: number;
   ram_required_gb: number;
   quantization: string;
@@ -199,6 +207,14 @@ export interface MemoryStats {
     index_name?: string;
     total_vectors?: number;
   };
+}
+
+export interface ModelRoleAssignment {
+  role: string;
+  assigned_model: string;
+  is_available: boolean;
+  default_model: string;
+  is_custom: boolean;
 }
 
 export interface AccountService {

@@ -120,8 +120,10 @@ class ModelManager:
         if not await self.ollama.ensure_model_loaded(new_model):
             raise RuntimeError(f"Could not load model {new_model}")
 
-        # Swap active pointer
+        # Swap active pointer (in-memory + persisted)
         settings.active_model_id = new_model
+        from memory.preferences import preference_store
+        await preference_store.set("active_model", new_model)
         log.info(f"Active model switched: {old_model} → {new_model}")
 
         # Update DB

@@ -1,7 +1,115 @@
 import { useEffect, useState } from "react";
-import { Download, Trash2, Zap, HardDrive, CheckCircle } from "lucide-react";
-import { api, ModelEntry } from "../lib/api";
+import { Download, Trash2, Zap, HardDrive, CheckCircle, RotateCcw } from "lucide-react";
+import { api, ModelEntry, ModelRoleAssignment } from "../lib/api";
 import { wsClient } from "../lib/ws";
+
+const ROLE_LABELS: Record<string, { label: string; description: string; emoji: string }> = {
+  chat:      { label: "Chat",      description: "General conversation",          emoji: "💬" },
+  coding:    { label: "Coding",    description: "Code gen, debug, review",       emoji: "💻" },
+  fast:      { label: "Fast",      description: "Intent classification, quick tasks", emoji: "⚡" },
+  research:  { label: "Research",  description: "Deep reasoning, multi-step",    emoji: "🔬" },
+  vision:    { label: "Vision",    description: "Images and screenshots",        emoji: "👁️" },
+  embedding: { label: "Embedding", description: "Vector memory search",          emoji: "🧠" },
+};
+
+function RoleRoutingPanel({ installedModels }: { installedModels: ModelEntry[] }) {
+  const [roles, setRoles] = useState<Record<string, ModelRoleAssignment>>({});
+  const [loading, setLoading] = useState(true);
+
+  const loadRoles = async () => {
+    try {
+      const data = await api.modelRoles.get();
+      setRoles(data);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { loadRoles(); }, [installedModels]);
+
+  const handleChange = async (role: string, modelId: string) => {
+    if (modelId === "__reset__") {
+      await api.modelRoles.reset(role);
+    } else {
+      await api.modelRoles.set(role, modelId);
+    }
+    loadRoles();
+  };
+
+  const downloadedModels = installedModels.filter((m) => m.is_downloaded);
+
+  return (
+    <section className="rounded-xl bg-zinc-800/40 border border-zinc-700/30 p-4">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h2 className="text-sm font-semibold text-white">Model Routing</h2>
+          <p className="text-xs text-zinc-500 mt-0.5">
+            Different models are used automatically based on task type
+          </p>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="text-xs text-zinc-500">Loading…</div>
+      ) : (
+        <div className="grid grid-cols-2 gap-2">
+          {Object.entries(roles).map(([roleKey, assignment]) => {
+            const meta = ROLE_LABELS[roleKey];
+            return (
+              <div
+                key={roleKey}
+                className="flex flex-col gap-1.5 rounded-lg bg-zinc-900/60 border border-zinc-700/30 p-3"
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-sm">{meta?.emoji}</span>
+                    <span className="text-xs font-medium text-zinc-300">{meta?.label ?? roleKey}</span>
+                    {assignment.is_custom && (
+                      <span className="text-xs px-1 py-0.5 rounded bg-indigo-900/40 text-indigo-400 border border-indigo-700/30">
+                        custom
+                      </span>
+                    )}
+                  </div>
+                  <div className={`h-1.5 w-1.5 rounded-full ${assignment.is_available ? "bg-green-400" : "bg-zinc-600"}`} />
+                </div>
+                <p className="text-xs text-zinc-500">{meta?.description}</p>
+
+                <div className="flex gap-1.5">
+                  <select
+                    value={assignment.assigned_model}
+                    onChange={(e) => handleChange(roleKey, e.target.value)}
+                    className="flex-1 bg-zinc-800 border border-zinc-700 rounded-md px-2 py-1 text-xs text-zinc-300 focus:outline-none truncate"
+                  >
+                    <option value={assignment.assigned_model} disabled={!assignment.is_available}>
+                      {assignment.assigned_model.split(":")[0]}
+                      {!assignment.is_available ? " (not downloaded)" : ""}
+                    </option>
+                    {downloadedModels
+                      .filter((m) => m.ollama_id !== assignment.assigned_model)
+                      .map((m) => (
+                        <option key={m.id} value={m.ollama_id ?? m.id}>
+                          {m.name}
+                        </option>
+                      ))}
+                  </select>
+                  {assignment.is_custom && (
+                    <button
+                      onClick={() => handleChange(roleKey, "__reset__")}
+                      title="Reset to default"
+                      className="p-1 rounded-md text-zinc-600 hover:text-zinc-300 hover:bg-zinc-700"
+                    >
+                      <RotateCcw size={11} />
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
 
 function StarRating({ stars }: { stars: number }) {
   return (
@@ -189,6 +297,8 @@ export default function Models() {
           </div>
         )}
       </div>
+
+      <RoleRoutingPanel installedModels={models} />
 
       {loading ? (
         <div className="text-sm text-zinc-500">Loading models…</div>

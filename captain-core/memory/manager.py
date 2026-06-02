@@ -35,7 +35,12 @@ class MemoryManager:
     ) -> ConversationContext:
         """Build full context for an LLM call."""
         recent = await self.episodic.get_recent_messages(conversation_id, n=20)
-        semantic_results = await self.semantic.search(query, k=5)
+        try:
+            semantic_results = await self.semantic.search(query, k=5)
+        except Exception as e:
+            log.debug(f"Semantic search skipped: {e}")
+            from memory.schemas import RetrievalResult
+            semantic_results = RetrievalResult(memories=[], scores=[], query=query)
         prefs = await self.preferences.get_all()
 
         # Trim semantic results to budget

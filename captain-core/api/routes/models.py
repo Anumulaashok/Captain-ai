@@ -2,12 +2,19 @@ import asyncio
 import logging
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 import json
 
 from models.manager import model_manager
+from models.router import model_router, ModelRole
 
 log = logging.getLogger(__name__)
 router = APIRouter()
+
+
+class RoleAssignRequest(BaseModel):
+    role: str
+    ollama_model_id: str
 
 
 @router.get("/models")
@@ -65,3 +72,33 @@ async def delete_model(model_id: str):
         return {"ok": True}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ── Model role routing ─────────────────────────────────────────────
+
+@router.get("/models/roles")
+async def get_role_assignments():
+    """Get the current model-per-role assignments and availability."""
+    return await model_router.get_all_assignments()
+
+
+@router.put("/models/roles")
+async def set_role_assignment(req: RoleAssignRequest):
+    """Assign a specific model to a role."""
+    try:
+        role = ModelRole(req.role)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Unknown role: {req.role}. Valid roles: {[r.value for r in ModelRole]}")
+    await model_router.set_role_model(role, req.ollama_model_id)
+    return {"ok": True, "role": role.value, "model": req.ollama_model_id}
+
+
+@router.delete("/models/roles/{role}")
+async def reset_role_assignment(role: str):
+    """Reset a role back to its default model."""
+    from memory.preferences import preference_store
+    from models.router import DEFAULT_ROLE_MODELS
+    current: dict = await preference_store.get("model_role_assignments") or {}
+    current.pop(role, None)
+    await preference_store.set("model_role_assignments", current)
+    return {"ok": True, "role": role, "reset_to": DEFAULT_ROLE_MODELS.get(role, "")}

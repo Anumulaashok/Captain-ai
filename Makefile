@@ -4,6 +4,9 @@
 setup:
 	@bash scripts/setup.sh
 
+setup-voice:
+	@bash scripts/setup_voice.sh
+
 # ── Development ────────────────────────────────────────────────────
 dev:
 	@echo "Starting Captain AI in development mode..."

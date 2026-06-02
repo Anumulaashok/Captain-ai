@@ -1,12 +1,15 @@
-"""Speech-to-text using faster-whisper."""
+"""Speech-to-text using faster-whisper (local, CPU-optimised)."""
+import asyncio
 import io
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from config import settings
 
 log = logging.getLogger(__name__)
+WHISPER_CACHE = Path(__file__).parent.parent / "data" / "whisper"
 
 
 @dataclass
@@ -21,58 +24,58 @@ class SpeechToText:
     def __init__(self):
         self._model = None
 
-    def _load(self):
-        if self._model is None:
-            from faster_whisper import WhisperModel
-            model_size = settings.whisper_model
-            log.info(f"Loading Whisper model: {model_size}")
-            self._model = WhisperModel(
-                model_size,
-                device="cpu",
-                compute_type="int8",
-            )
-            log.info("Whisper model loaded")
+    def _load(self) -> None:
+        if self._model:
+            return
+        from faster_whisper import WhisperModel
+        log.info(f"Loading Whisper {settings.whisper_model}…")
+        WHISPER_CACHE.mkdir(parents=True, exist_ok=True)
+        self._model = WhisperModel(
+            settings.whisper_model,
+            device="cpu",
+            compute_type="int8",
+            download_root=str(WHISPER_CACHE),
+        )
+        log.info("Whisper ready")
 
     async def transcribe(self, audio_bytes: bytes, language: str = "en") -> TranscriptResult:
-        import asyncio
-        import time
-
         self._load()
-        t_start = time.time()
+        t0 = time.time()
 
         def _run():
             import numpy as np
             import soundfile as sf
-
-            # Parse audio bytes to numpy array
             buf = io.BytesIO(audio_bytes)
-            audio_data, sample_rate = sf.read(buf, dtype="float32")
-            if audio_data.ndim > 1:
-                audio_data = audio_data.mean(axis=1)
-
-            segments, info = self._model.transcribe(
-                audio_data,
+            try:
+                audio, sr = sf.read(buf, dtype="float32")
+            except Exception:
+                # Try raw PCM fallback (16-bit, 16 kHz, mono)
+                import struct
+                pcm = audio_bytes
+                audio = np.array(struct.unpack(f"<{len(pcm)//2}h", pcm), dtype=np.float32) / 32768.0
+            if audio.ndim > 1:
+                audio = audio.mean(axis=1)
+            segs, info = self._model.transcribe(
+                audio,
                 language=language,
                 beam_size=5,
                 best_of=5,
                 temperature=0.0,
                 vad_filter=True,
-                vad_parameters={"min_silence_duration_ms": 500},
+                vad_parameters={"min_silence_duration_ms": 600},
             )
-            text = " ".join(seg.text.strip() for seg in segments).strip()
+            text = " ".join(s.text.strip() for s in segs).strip()
             return text, info.language, info.language_probability
 
         loop = asyncio.get_event_loop()
         text, lang, prob = await loop.run_in_executor(None, _run)
-        duration_ms = int((time.time() - t_start) * 1000)
+        ms = int((time.time() - t0) * 1000)
+        log.debug(f"STT {ms}ms: '{text}'")
+        return TranscriptResult(text=text, language=lang, confidence=round(prob, 3), duration_ms=ms)
 
-        log.debug(f"Transcribed in {duration_ms}ms: '{text}'")
-        return TranscriptResult(
-            text=text,
-            language=lang,
-            confidence=round(prob, 3),
-            duration_ms=duration_ms,
-        )
+    async def transcribe_stream(self, audio_bytes: bytes) -> TranscriptResult:
+        """Alias for real-time use."""
+        return await self.transcribe(audio_bytes)
 
 
 stt = SpeechToText()

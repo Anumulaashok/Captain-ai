@@ -78,6 +78,7 @@ export default function Chat() {
   const [input, setInput] = useState("");
   const [voiceActive, setVoiceActive] = useState(false);
   const [agentActivity, setAgentActivity] = useState<string | null>(null);
+  const [modelUsed, setModelUsed] = useState<{ role: string; model: string } | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -86,13 +87,20 @@ export default function Chat() {
     wsClient.connect();
 
     const unsubAgent = wsClient.on("agent_started", (data) => {
-      setAgentActivity(`${(data as { agent_name: string }).agent_name} working…`);
+      const d = data as { agent_name: string; model?: string };
+      setAgentActivity(`${d.agent_name} working…`);
     });
     const unsubDone = wsClient.on("agent_finished", () => setAgentActivity(null));
+    const unsubModel = wsClient.on("model_used", (data) => {
+      const d = data as { role: string; model: string };
+      setModelUsed(d);
+      setTimeout(() => setModelUsed(null), 4000);
+    });
 
     return () => {
       unsubAgent();
       unsubDone();
+      unsubModel();
     };
   }, []);
 
@@ -165,6 +173,15 @@ export default function Chat() {
           <div className="flex items-center gap-2 px-4 py-2 bg-indigo-900/30 border-b border-indigo-700/30 text-xs text-indigo-300">
             <div className="h-1.5 w-1.5 rounded-full bg-indigo-400 animate-pulse" />
             {agentActivity}
+          </div>
+        )}
+        {/* Model-used flash */}
+        {modelUsed && (
+          <div className="flex items-center gap-2 px-4 py-1.5 bg-zinc-800/60 border-b border-zinc-700/30 text-xs text-zinc-500">
+            <span className="text-zinc-600">using</span>
+            <span className="font-mono text-zinc-400">{modelUsed.model.split(":")[0]}</span>
+            <span className="text-zinc-600">for</span>
+            <span className="text-zinc-400">{modelUsed.role}</span>
           </div>
         )}
 

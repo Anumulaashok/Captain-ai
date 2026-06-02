@@ -40,13 +40,34 @@ async def lifespan(app: FastAPI):
     else:
         log.warning("PINECONE_API_KEY not set — semantic memory disabled")
 
-    # Check Ollama availability
+    # Resolve active model: saved preference → env default → first available
+    from memory.preferences import preference_store
     from models.ollama_client import OllamaClient
     ollama = OllamaClient()
+
     if await ollama.is_running():
+        local = await ollama.list_local()
+        local_names = [m["name"] for m in local]
+        log.info(f"Ollama local models: {local_names}")
+
+        # 1. Try saved preference (only trust if it's actually downloaded)
+        saved = await preference_store.get("active_model")
+        if saved and any(saved.split(":")[0] in n for n in local_names):
+            settings.active_model_id = saved
+        # 2. Try env/config default
+        elif any(settings.active_model_id.split(":")[0] in n for n in local_names):
+            pass  # keep settings.active_model_id as-is
+        # 3. Auto-pick first available model
+        elif local_names:
+            settings.active_model_id = local_names[0]
+            await preference_store.set("active_model", settings.active_model_id)
+            log.info(f"Auto-selected available model: {settings.active_model_id}")
+        else:
+            log.warning("No models downloaded. Visit the Models page to download one.")
+
         log.info(f"Ollama running — active model: {settings.active_model_id}")
     else:
-        log.warning("Ollama not running — start with: ollama serve")
+        log.warning("Ollama not running — start with: brew services start ollama")
 
     log.info(f"Captain AI ready on http://{settings.app_host}:{settings.app_port}")
     yield

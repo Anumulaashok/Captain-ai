@@ -63,10 +63,18 @@ class SemanticMemory:
             self._index = pc.Index(settings.pinecone_index_name)
         return self._index
 
-    async def _embed(self, text: str) -> list[float]:
-        """Generate embedding via local Ollama nomic-embed-text."""
-        ollama = self._get_ollama()
-        return await ollama.embed(self.EMBEDDING_MODEL, text)
+    async def _embed(self, text: str) -> list[float] | None:
+        """Generate embedding via the configured embedding model. Returns None if unavailable."""
+        try:
+            from models.router import model_router
+            embed_model = await model_router.get_embedding_model()
+            if not embed_model:
+                return None
+            ollama = self._get_ollama()
+            return await ollama.embed(embed_model, text)
+        except Exception as e:
+            log.debug(f"Embedding unavailable: {e}")
+            return None
 
     async def store(
         self,
@@ -78,6 +86,8 @@ class SemanticMemory:
             return entry.id
 
         vector = await self._embed(entry.value)
+        if vector is None:
+            return entry.id  # skip silently if embedding unavailable
         pinecone_id = str(uuid.uuid4())
         metadata = {
             "type": entry.type,
@@ -105,6 +115,8 @@ class SemanticMemory:
             return RetrievalResult(memories=[], scores=[], query=query)
 
         vector = await self._embed(query)
+        if vector is None:
+            return RetrievalResult(memories=[], scores=[], query=query)
         results = self._index_client().query(
             vector=vector,
             top_k=k,

@@ -129,7 +129,7 @@ class AgentBase(ABC):
         Returns (final_response, tool_calls, total_tokens).
         """
         from models.ollama_client import OllamaClient
-        from config import settings
+        from models.router import model_router, ModelRole, INTENT_TO_ROLE
 
         ollama = OllamaClient()
         tool_map: dict[str, Tool] = {t.name: t for t in tools}
@@ -138,9 +138,17 @@ class AgentBase(ABC):
         total_tokens = 0
         loop_messages = list(messages)
 
+        # Use role-appropriate model, or model_override from task context
+        model_override = task.context.get("model_override") if task.context else None
+        if model_override:
+            model = model_override
+        else:
+            role = INTENT_TO_ROLE.get(task.intent, ModelRole.CHAT)
+            model = await model_router.get_model_for_role(role)
+
         for iteration in range(task.max_iterations):
             response = await ollama.chat_complete(
-                settings.active_model_id,
+                model,
                 loop_messages,
                 tools=ollama_tools,
                 temperature=0.1,

@@ -68,17 +68,19 @@ async def classify_intent(user_message: str) -> IntentResult:
     if not await ollama.is_running():
         return _keyword_fallback(user_message)
 
-    # Skip LLM classification if active model isn't downloaded yet
+    # Use the FAST model for classification (cheap, quick)
+    from models.router import model_router, ModelRole
+    fast_model = await model_router.get_model_for_role(ModelRole.FAST)
+
+    # Verify at least one model is available
     local = await ollama.list_local()
-    local_names = [m["name"] for m in local]
-    model_base = settings.active_model_id.split(":")[0]
-    if not any(model_base in name for name in local_names):
+    if not local:
         return _keyword_fallback(user_message)
 
     prompt = CLASSIFICATION_PROMPT.format(message=user_message[:500])
     try:
         response = await ollama.chat_complete(
-            settings.active_model_id,
+            fast_model,
             [{"role": "user", "content": prompt}],
             temperature=0.0,
         )
