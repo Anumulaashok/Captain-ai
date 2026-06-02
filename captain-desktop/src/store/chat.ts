@@ -10,7 +10,7 @@ interface ChatState {
 
   loadConversations: () => Promise<void>;
   selectConversation: (id: string) => Promise<void>;
-  newConversation: () => Promise<void>;
+  newConversation: () => void;
   sendMessage: (text: string) => Promise<void>;
   deleteConversation: (id: string) => Promise<void>;
 }
@@ -35,10 +35,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
   },
 
-  newConversation: async () => {
-    const { id } = await api.conversations.create();
-    await get().loadConversations();
-    set({ activeConversationId: id, messages: [] });
+  newConversation: () => {
+    set({ activeConversationId: null, messages: [] });
   },
 
   sendMessage: async (text) => {
