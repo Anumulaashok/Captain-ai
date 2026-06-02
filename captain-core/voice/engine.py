@@ -97,9 +97,13 @@ class VoiceEngine:
 
         # Speak the response
         if response_text.strip():
+            log.info(f"Speaking response ({len(response_text)} chars) via {tts.backend}")
             await self._publish("voice_speaking", {"text": response_text})
             await tts.speak_and_play(response_text)
             await self._publish("voice_done", {})
+            log.info("TTS done")
+        else:
+            log.warning("Empty response — nothing to speak")
 
         return response_text
 
@@ -193,6 +197,44 @@ class VoiceEngine:
         except Exception as e:
             log.error(f"Recording error: {e}")
             await self._publish("voice_error", {"error": str(e)})
+
+    # ── Proactive briefing ────────────────────────────────────────
+
+    async def speak_briefing(self, conversation_id: str | None = None) -> str:
+        """
+        Run the BriefingAgent and speak the result aloud.
+        Called on schedule (e.g. 8am) or by user voice command.
+        """
+        from agents.registry import agent_registry
+        from agents.base import AgentTask
+
+        conv_id = conversation_id or self._active_conversation_id or "briefing"
+        agent = agent_registry.get("briefing")
+        if agent is None:
+            log.warning("Briefing agent not found")
+            return ""
+
+        task = AgentTask(
+            agent_id="briefing",
+            intent="briefing_task",
+            user_message="What's the update? Give me a full status briefing.",
+            context={"source": "proactive"},
+        )
+
+        try:
+            result = await agent.run(task)
+            text = result.response.strip()
+        except Exception as e:
+            log.error(f"Briefing agent failed: {e}")
+            return ""
+
+        if text:
+            await self._publish("voice_briefing", {"text": text})
+            await self._publish("voice_speaking", {"text": text})
+            await tts.speak_and_play(text)
+            await self._publish("voice_done", {})
+
+        return text
 
     # ── Helpers ────────────────────────────────────────────────────
 

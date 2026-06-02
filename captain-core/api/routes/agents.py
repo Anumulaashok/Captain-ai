@@ -80,3 +80,24 @@ async def update_permissions(agent_id: str, req: PermissionUpdateRequest):
 async def get_permissions(agent_id: str):
     from security.permissions import permission_manager
     return {"permissions": await permission_manager.get_agent_permissions(agent_id)}
+
+
+class ApprovalRequest(BaseModel):
+    approved: bool
+
+
+@router.post("/agents/approvals/{request_id}")
+async def resolve_approval(request_id: str, req: ApprovalRequest):
+    """Called by the UI Approve/Deny modal to resume a paused agent."""
+    from security.approvals import approval_manager
+    ok = approval_manager.resolve(request_id, req.approved)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Approval request not found or already resolved")
+    return {"ok": True, "approved": req.approved}
+
+
+@router.get("/agents/approvals/pending")
+async def list_pending_approvals():
+    """Returns request_ids currently awaiting user action."""
+    from security.approvals import approval_manager
+    return {"pending": approval_manager.list_pending()}

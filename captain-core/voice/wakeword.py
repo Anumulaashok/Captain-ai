@@ -87,6 +87,9 @@ class WakeWordDetector:
                                     self._on_wake({"score": float(score), "model": model_name}),
                                     self._loop,
                                 )
+                            # Cooldown — ignore further triggers for ~2 seconds
+                            oww.reset()
+                            import time as _t; _t.sleep(2.0)
                 except Exception as e:
                     log.debug(f"Wake word loop error: {e}")
                     continue

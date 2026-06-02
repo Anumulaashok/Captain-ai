@@ -74,3 +74,11 @@ async def speak_aloud(req: SpeakRequest):
     """Speak text aloud through speakers immediately."""
     await tts.speak_and_play(req.text)
     return {"ok": True, "backend": tts.backend}
+
+
+@router.post("/voice/briefing")
+async def trigger_briefing():
+    """Manually trigger the proactive briefing — same as saying 'what's the update?'"""
+    import asyncio
+    asyncio.create_task(voice_engine.speak_briefing())
+    return {"ok": True, "status": "briefing_started"}

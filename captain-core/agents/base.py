@@ -117,6 +117,60 @@ class AgentBase(ABC):
                 return False
         return True
 
+    def _make_delegate_tool(self, task: AgentTask, delegation_depth: int) -> Tool | None:
+        """
+        Build a 'delegate_to_agent' tool that lets the LLM hand a subtask to another agent.
+        Only injected when the task is explicitly from a multi-agent orchestration context
+        AND we haven't hit the max delegation depth.
+        """
+        MAX_DEPTH = 2
+        # Only add delegation in multi-agent contexts — not for every single-agent task
+        is_multi_agent = task.context.get("source") == "multi_agent" or delegation_depth > 0
+        if not is_multi_agent or delegation_depth >= MAX_DEPTH:
+            return None
+
+        async def _delegate(agent_id: str, instruction: str) -> str:
+            from agents.registry import agent_registry
+            target = agent_registry.get(agent_id)
+            if not target:
+                return f"Error: agent '{agent_id}' does not exist."
+            sub_task = AgentTask(
+                agent_id=agent_id,
+                intent=f"{agent_id}_task",
+                user_message=instruction,
+                context={**task.context, "_delegation_depth": delegation_depth + 1},
+                max_iterations=task.max_iterations,
+            )
+            result = await target.run(sub_task)
+            return result.response if result.success else f"Delegation failed: {result.error}"
+
+        from agents.registry import agent_registry
+        available = [a.id for a in agent_registry.list_all() if a.id != self.id]
+        # Note: no "enum" here — Ollama rejects JSON Schema enum in tool parameters.
+        return Tool(
+            name="delegate_to_agent",
+            description=(
+                f"Delegate a subtask to another specialized agent. "
+                f"Available agent IDs: {', '.join(available)}. "
+                "Use the exact agent_id string from this list."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "agent_id": {
+                        "type": "string",
+                        "description": f"ID of the target agent. One of: {', '.join(available)}",
+                    },
+                    "instruction": {
+                        "type": "string",
+                        "description": "Clear, self-contained instruction for the target agent",
+                    },
+                },
+                "required": ["agent_id", "instruction"],
+            },
+            handler=_delegate,
+        )
+
     async def _llm_tool_loop(
         self,
         messages: list[dict],
@@ -132,8 +186,14 @@ class AgentBase(ABC):
         from models.router import model_router, ModelRole, INTENT_TO_ROLE
 
         ollama = OllamaClient()
-        tool_map: dict[str, Tool] = {t.name: t for t in tools}
-        ollama_tools = [t.to_ollama_format() for t in tools]
+
+        # Inject delegation tool so agents can hand subtasks to each other
+        delegation_depth = task.context.get("_delegation_depth", 0) if task.context else 0
+        delegate_tool = self._make_delegate_tool(task, delegation_depth)
+        all_tools = list(tools) + ([delegate_tool] if delegate_tool else [])
+
+        tool_map: dict[str, Tool] = {t.name: t for t in all_tools}
+        ollama_tools = [t.to_ollama_format() for t in all_tools]
         all_tool_calls: list[ToolCall] = []
         total_tokens = 0
         loop_messages = list(messages)
@@ -179,6 +239,24 @@ class AgentBase(ABC):
                     tool = tool_map.get(tool_name)
                     if not tool or not tool.handler:
                         raise ValueError(f"Unknown tool: {tool_name}")
+
+                    # Check required permissions before executing; if missing, ask user
+                    from security.permissions import permission_manager
+                    from security.approvals import approval_manager
+                    for perm in self.required_permissions:
+                        if not await permission_manager.has_permission(self.id, perm):
+                            approved = await approval_manager.request(
+                                agent_id=self.id,
+                                permission=perm.value,
+                                reason=f"Running tool '{tool_name}'",
+                            )
+                            if approved:
+                                await permission_manager.grant(self.id, perm)
+                            else:
+                                raise PermissionError(
+                                    f"Permission '{perm.value}' denied by user"
+                                )
+
                     result = await tool.handler(**args)
                     result_str = str(result)
                     tool_record.result = result_str

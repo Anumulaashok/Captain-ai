@@ -1,16 +1,23 @@
-"""Central Orchestrator — routes messages to the right model and agent."""
+"""Central Orchestrator — routes messages to the right model and agent(s)."""
 import asyncio
 import logging
 import time
+import uuid
 from collections.abc import AsyncGenerator
 
 from orchestrator.intent import classify_intent
+from orchestrator.planner import plan
+from orchestrator.executor import execute, aggregate
 from memory.manager import memory_manager
 from agents.registry import agent_registry
 from agents.base import AgentTask
 from models.router import model_router, ModelRole, INTENT_TO_ROLE
+from api.websocket import event_bus
 
 log = logging.getLogger(__name__)
+
+# Intents that should always try multiple agents
+MULTI_AGENT_INTENTS = {"multi_agent", "research_task"}
 
 
 class Orchestrator:
@@ -22,76 +29,125 @@ class Orchestrator:
     ) -> AsyncGenerator[dict, None]:
         """
         Main entry point. Yields SSE event dicts:
-          {"type": "token",          "data": {"text": str, "done": bool}}
-          {"type": "model_used",     "data": {"role": str, "model": str}}
-          {"type": "agent_started",  "data": {"agent_id": str, "agent_name": str}}
-          {"type": "agent_finished", "data": {...}}
-          {"type": "memory_stored",  "data": {...}}
+          {"type": "token",            "data": {"text": str, "done": bool}}
+          {"type": "model_used",       "data": {"role": str, "model": str}}
+          {"type": "plan_created",     "data": {"subtasks": [...], "rationale": str}}
+          {"type": "agent_started",    "data": {"agent_id": str, "agent_name": str, "subtask_id": str}}
+          {"type": "agent_finished",   "data": {...}}
+          {"type": "memory_stored",    "data": {...}}
         """
         t_start = time.time()
+        parent_task_id = str(uuid.uuid4())
+
         await memory_manager.episodic.add_message(conversation_id, "user", user_message)
 
-        # Classify intent using the FAST model (cheap, quick)
+        # Classify intent using the FAST model
         intent = await classify_intent(user_message)
         log.info(f"Intent: {intent.intent} ({intent.confidence:.2f})")
 
         full_response = ""
 
         if intent.intent == "simple_chat" or intent.confidence < 0.6:
+            # ── Simple chat: stream directly from LLM ──────────────────────
             async for event in self._llm_chat(user_message, conversation_id, intent.intent):
                 if event["type"] == "token":
                     full_response += event["data"].get("text", "")
                 yield event
-        else:
-            agents = agent_registry.route(intent.intent)
-            enabled_agents = await self._filter_enabled(agents)
 
-            if not enabled_agents:
+        else:
+            # ── Agent path: plan → execute ─────────────────────────────────
+            all_agents = agent_registry.list_all()
+            enabled_agents = await self._filter_enabled(all_agents)
+            available_ids = [a.id for a in enabled_agents]
+
+            # If the naturally-routed agents for this intent are all disabled,
+            # fall back to a plain LLM chat rather than picking an unrelated agent.
+            routed = agent_registry.route(intent.intent)
+            routed_enabled = [a for a in routed if a.id in available_ids]
+            if routed and not routed_enabled and intent.intent != "multi_agent":
+                log.info(f"Agents for '{intent.intent}' are all disabled — falling back to LLM chat")
+                async for event in self._llm_chat(user_message, conversation_id, intent.intent):
+                    if event["type"] == "token":
+                        full_response += event["data"].get("text", "")
+                    yield event
+                # skip to memory consolidation at the end
+            elif not enabled_agents:
                 async for event in self._llm_chat(user_message, conversation_id, intent.intent):
                     if event["type"] == "token":
                         full_response += event["data"].get("text", "")
                     yield event
             else:
-                agent = enabled_agents[0]
-                # Tell the agent which model to use for its role
-                role_model = await model_router.get_model_for_intent(intent.intent)
-                yield {"type": "agent_started", "data": {
-                    "agent_id": agent.id,
-                    "agent_name": agent.name,
-                    "model": role_model,
-                }}
-                yield {"type": "model_used", "data": {
-                    "role": INTENT_TO_ROLE.get(intent.intent, ModelRole.CHAT).value,
-                    "model": role_model,
-                }}
+                # Build task plan (single subtask for focused intents, multi for multi_agent)
+                task_plan = await plan(user_message, intent.intent, available_ids)
 
-                task = AgentTask(
-                    agent_id=agent.id,
-                    intent=intent.intent,
-                    user_message=user_message,
-                    context={"model_override": role_model},
-                )
+                yield {
+                    "type": "plan_created",
+                    "data": {
+                        "parent_task_id": parent_task_id,
+                        "subtasks": [st.model_dump() for st in task_plan.subtasks],
+                        "rationale": task_plan.rationale,
+                    },
+                }
+                await event_bus.publish("plan_created", {
+                    "parent_task_id": parent_task_id,
+                    "subtask_count": len(task_plan.subtasks),
+                    "agents": [st.agent_id for st in task_plan.subtasks],
+                })
 
-                try:
-                    result = await agent.run(task)
-                    full_response = result.response
-                    yield {"type": "agent_finished", "data": {
-                        "agent_id": agent.id,
-                        "task_id": task.id,
+                # ── Execution callbacks that stream events ──
+                async def on_start(subtask):
+                    agent = agent_registry.get(subtask.agent_id)
+                    name = agent.name if agent else subtask.agent_id
+                    event = {
+                        "type": "agent_started",
+                        "data": {
+                            "agent_id": subtask.agent_id,
+                            "agent_name": name,
+                            "subtask_id": subtask.id,
+                            "subtask": subtask.subtask[:120],
+                        },
+                    }
+                    await event_bus.publish("agent_started", event["data"])
+
+                async def on_done(subtask, result):
+                    event_data = {
+                        "agent_id": subtask.agent_id,
+                        "subtask_id": subtask.id,
                         "success": result.success,
                         "tool_calls": len(result.tool_calls),
                         "artifacts": [a.model_dump() for a in result.artifacts],
                         "latency_ms": result.latency_ms,
-                    }}
-                    # Stream agent response as tokens
-                    for i, word in enumerate(full_response.split(" ")):
-                        done = i == len(full_response.split(" ")) - 1
-                        yield {"type": "token", "data": {"text": word + ("" if done else " "), "done": done}}
-                        await asyncio.sleep(0)
-                except Exception as e:
-                    log.error(f"Agent {agent.id} failed: {e}")
-                    full_response = f"The {agent.name} encountered an error: {e}"
-                    yield {"type": "token", "data": {"text": full_response, "done": True}}
+                    }
+                    await event_bus.publish("agent_finished", event_data)
+
+                # ── Run the plan ──
+                results = await execute(
+                    task_plan,
+                    conversation_id,
+                    parent_task_id=parent_task_id,
+                    on_subtask_start=on_start,
+                    on_subtask_done=on_done,
+                )
+
+                # Stream a final synthetic agent_finished for the whole plan
+                all_artifacts = [a for r in results for a in r.artifacts]
+                yield {
+                    "type": "agent_finished",
+                    "data": {
+                        "parent_task_id": parent_task_id,
+                        "subtask_count": len(results),
+                        "success": any(r.success for r in results),
+                        "artifacts": [a.model_dump() for a in all_artifacts],
+                    },
+                }
+
+                # Aggregate and stream as tokens
+                full_response = await aggregate(results, user_message)
+                words = full_response.split(" ")
+                for i, word in enumerate(words):
+                    done = i == len(words) - 1
+                    yield {"type": "token", "data": {"text": word + ("" if done else " "), "done": done}}
+                    await asyncio.sleep(0)
 
         # Persist assistant response
         latency_ms = int((time.time() - t_start) * 1000)
@@ -122,11 +178,9 @@ class Orchestrator:
             }}
             return
 
-        # Pick model by role
         role = INTENT_TO_ROLE.get(intent, ModelRole.CHAT)
         model = await model_router.get_model_for_role(role)
 
-        # Verify model is actually available (router falls back, but double-check)
         local = await ollama.list_local()
         if not local:
             yield {"type": "token", "data": {
@@ -161,9 +215,12 @@ class Orchestrator:
         from db.models import AgentRecord
         enabled = []
         for agent in agents:
-            async with AsyncSessionLocal() as db:
-                rec = await db.get(AgentRecord, agent.id)
-            if rec and rec.is_enabled:
+            try:
+                async with AsyncSessionLocal() as db:
+                    rec = await db.get(AgentRecord, agent.id)
+                if rec is None or rec.is_enabled:
+                    enabled.append(agent)
+            except Exception:
                 enabled.append(agent)
         return enabled
 

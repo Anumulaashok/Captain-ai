@@ -78,6 +78,31 @@ async def delete_memory(memory_id: str):
     return {"ok": True}
 
 
+@router.get("/briefing")
+async def get_briefing_items(unread_only: bool = True, limit: int = 50):
+    """Return briefing items for the Command Center dashboard."""
+    from briefing.store import get_unread, get_recent_by_category
+    if unread_only:
+        return await get_unread(limit=limit)
+    from db.database import AsyncSessionLocal
+    from db.models import BriefingItem
+    from sqlalchemy import select
+    async with AsyncSessionLocal() as db:
+        q = select(BriefingItem).order_by(
+            BriefingItem.priority.asc(), BriefingItem.created_at.desc()
+        ).limit(limit)
+        rows = (await db.execute(q)).scalars().all()
+    return [
+        {
+            "id": r.id, "category": r.category, "priority": r.priority,
+            "title": r.title, "summary": r.summary, "source_agent": r.source_agent,
+            "meta": r.meta or {}, "is_read": r.is_read,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in rows
+    ]
+
+
 @router.get("/memory/stats")
 async def get_memory_stats():
     pinecone_stats = await semantic_memory.get_stats()

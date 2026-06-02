@@ -16,6 +16,9 @@ AGENT_MODULES = {
     "file":     "agents.file.agent",
     "terminal": "agents.terminal.agent",
     "research": "agents.research.agent",
+    "github":   "agents.github.agent",
+    "finance":  "agents.finance.agent",
+    "briefing": "agents.briefing.agent",
 }
 
 
@@ -84,9 +87,18 @@ class AgentRegistry:
             "terminal_task": ["terminal"],
             "research_task": ["research", "browser"],
             "multi_agent":   ["coding", "file", "research"],
+            "briefing_task": ["briefing"],
         }
         agent_ids = keyword_map.get(intent, [])
         return [self._agents[aid] for aid in agent_ids if aid in self._agents]
+
+    def find_by_capability(self, capability: str) -> list[AgentBase]:
+        """Return agents that declare a given capability string."""
+        self._load_all()
+        return [
+            a for a in self._agents.values()
+            if capability in (a.capabilities or [])
+        ]
 
 
 agent_registry = AgentRegistry()

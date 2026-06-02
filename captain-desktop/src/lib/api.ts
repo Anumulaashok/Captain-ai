@@ -132,6 +132,18 @@ export const api = {
       post("/api/voice/mode", { mode, conversation_id: conversationId }),
     getMode: () => get<{ mode: string }>("/api/voice/mode"),
     speak: (text: string) => post<{ audio_base64: string }>("/api/voice/speak", { text }),
+    triggerBriefing: () => post("/api/voice/briefing"),
+  },
+
+  briefing: {
+    items: (unreadOnly = true) =>
+      get<BriefingItem[]>(`/api/briefing?unread_only=${unreadOnly}`),
+  },
+
+  approvals: {
+    resolve: (requestId: string, approved: boolean) =>
+      post(`/api/agents/approvals/${requestId}`, { approved }),
+    pending: () => get<{ pending: string[] }>("/api/agents/approvals/pending"),
   },
 };
 
@@ -232,4 +244,16 @@ export interface AccountService {
 export interface AccountsStatus {
   local: AccountService[];
   cloud: AccountService[];
+}
+
+export interface BriefingItem {
+  id: string;
+  category: string;
+  priority: number;
+  title: string;
+  summary: string;
+  source_agent: string;
+  meta: Record<string, unknown>;
+  is_read: boolean;
+  created_at: string | null;
 }

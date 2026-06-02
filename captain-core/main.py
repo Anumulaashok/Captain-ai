@@ -69,10 +69,20 @@ async def lifespan(app: FastAPI):
     else:
         log.warning("Ollama not running — start with: brew services start ollama")
 
+    # Start background agent scheduler
+    from scheduler.service import start_scheduler
+    start_scheduler()
+
     log.info(f"Captain AI ready on http://{settings.app_host}:{settings.app_port}")
     yield
 
     log.info("Captain AI shutting down...")
+    # Stop background scheduler
+    try:
+        from scheduler.service import stop_scheduler
+        stop_scheduler()
+    except Exception:
+        pass
     # Stop voice engine if running
     try:
         from voice.engine import voice_engine

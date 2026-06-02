@@ -40,6 +40,7 @@ INTENT_TO_ROLE: dict[str, ModelRole] = {
     "terminal_task":  ModelRole.FAST,
     "research_task":  ModelRole.RESEARCH,
     "multi_agent":    ModelRole.RESEARCH,
+    "briefing_task":  ModelRole.CHAT,
 }
 
 

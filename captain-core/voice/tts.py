@@ -26,14 +26,15 @@ class TextToSpeech:
     def _try_load_piper(self) -> bool:
         if self._piper_available is not None:
             return self._piper_available
+        # Check model file exists first — avoids bad piper state
+        model_path = DATA_DIR / f"{VOICE_MODEL}.onnx"
+        config_path = DATA_DIR / f"{VOICE_MODEL}.onnx.json"
+        if not model_path.exists() or not config_path.exists():
+            log.info("Piper voice model not downloaded — using macOS say")
+            self._piper_available = False
+            return False
         try:
             from piper.voice import PiperVoice
-            model_path = DATA_DIR / f"{VOICE_MODEL}.onnx"
-            config_path = DATA_DIR / f"{VOICE_MODEL}.onnx.json"
-            if not model_path.exists():
-                log.info("Piper model not found — using macOS say")
-                self._piper_available = False
-                return False
             self._piper_voice = PiperVoice.load(str(model_path), config_path=str(config_path))
             self._piper_available = True
             log.info("Piper TTS loaded (en_US-amy-medium)")
@@ -79,16 +80,25 @@ class TextToSpeech:
 
     async def _piper_speak(self, text: str) -> bytes:
         def _synth():
-            buf = io.BytesIO()
             import wave
+            # Piper synthesize() returns Iterable[AudioChunk] with raw PCM
+            chunks = list(self._piper_voice.synthesize(text))
+            sample_rate = self._piper_voice.config.sample_rate
+            raw_audio = b"".join(c.audio_int16_bytes for c in chunks)
+            sample_rate = chunks[0].sample_rate if chunks else 22050
+            sample_width = chunks[0].sample_width if chunks else 2
+            channels = chunks[0].sample_channels if chunks else 1
+            buf = io.BytesIO()
             with wave.open(buf, "wb") as wf:
-                self._piper_voice.synthesize(text, wf)
+                wf.setnchannels(channels)
+                wf.setsampwidth(sample_width)
+                wf.setframerate(sample_rate)
+                wf.writeframes(raw_audio)
             return buf.getvalue()
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, _synth)
 
     async def _play_wav(self, wav_bytes: bytes) -> None:
-        """Play WAV bytes through sounddevice."""
         def _play():
             import sounddevice as sd
             import soundfile as sf
@@ -96,21 +106,25 @@ class TextToSpeech:
             data, sr = sf.read(buf, dtype="float32")
             sd.play(data, sr)
             sd.wait()
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, _play)
 
     # ── macOS say backend ──────────────────────────────────────────
 
     async def _say_speak(self, text: str) -> None:
         """Use macOS built-in TTS (Samantha neural voice, fully offline)."""
-        clean = text.replace('"', "'").replace('`', "'").replace("*", "").replace("#", "")
-        cmd = ["say", "-v", MACOS_VOICE, "-r", "180", clean]
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await proc.wait()
+        import re
+        import subprocess
+        clean = re.sub(r"[*#`_~]", "", text).replace('"', "'").strip()
+        if not clean:
+            return
+        preview = clean[:80] + ("…" if len(clean) > 80 else "")
+        log.info(f"TTS say: '{preview}'")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, lambda: subprocess.run(
+            ["say", "-v", MACOS_VOICE, "-r", "175", clean],
+            timeout=90
+        ))
 
 
 tts = TextToSpeech()
