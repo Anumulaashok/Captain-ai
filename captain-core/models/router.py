@@ -34,7 +34,7 @@ INTENT_TO_ROLE: dict[str, ModelRole] = {
     "simple_chat":    ModelRole.CHAT,
     "coding_task":    ModelRole.CODING,
     "email_task":     ModelRole.CHAT,
-    "browser_task":   ModelRole.FAST,
+    "browser_task":   ModelRole.CHAT,
     "calendar_task":  ModelRole.FAST,
     "file_task":      ModelRole.CHAT,
     "terminal_task":  ModelRole.FAST,
