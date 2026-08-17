@@ -16,6 +16,7 @@ INTENT_TYPES = [
     "research_task",
     "multi_agent",
     "briefing_task",
+    "goal_task",
 ]
 
 CLASSIFICATION_PROMPT = """Classify the user's intent into ONE of these categories:
@@ -29,6 +30,7 @@ CLASSIFICATION_PROMPT = """Classify the user's intent into ONE of these categori
 - research_task: multi-step research, gather information
 - multi_agent: requires multiple agents working together
 - briefing_task: status update, what's going on, morning briefing, what agents are doing
+- goal_task: create goal, track progress, milestones, project planning
 
 User message: "{message}"
 
@@ -60,6 +62,8 @@ def _keyword_fallback(user_message: str) -> IntentResult:
         return IntentResult(intent="research_task", confidence=0.7)
     if any(w in msg for w in ["update", "what's going on", "status", "briefing", "what are you doing", "morning brief", "what happened"]):
         return IntentResult(intent="briefing_task", confidence=0.8)
+    if any(w in msg for w in ["goal", "milestone", "objective", "track progress", "project plan"]):
+        return IntentResult(intent="goal_task", confidence=0.75)
     return IntentResult(intent="simple_chat", confidence=0.6)
 
 

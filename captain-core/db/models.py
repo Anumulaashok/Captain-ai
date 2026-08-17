@@ -150,6 +150,67 @@ class BriefingItem(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
+class GoalRecord(Base):
+    __tablename__ = "goals"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    title: Mapped[str] = mapped_column(String(256), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    target_date: Mapped[str | None] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(16), default="active")  # active|completed|paused
+    progress: Mapped[float] = mapped_column(Float, default=0.0)
+    milestones: Mapped[list | None] = mapped_column(JSON, default=list)
+    blockers: Mapped[list | None] = mapped_column(JSON, default=list)
+    meta: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
+
+
+class LongRunningTaskRecord(Base):
+    """Multi-day task with checkpoints."""
+    __tablename__ = "long_running_tasks"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    goal_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("goals.id", ondelete="SET NULL"))
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    steps: Mapped[list | None] = mapped_column(JSON, default=list)
+    current_step: Mapped[int] = mapped_column(Integer, default=0)
+    checkpoints: Mapped[list | None] = mapped_column(JSON, default=list)
+    blockers: Mapped[list | None] = mapped_column(JSON, default=list)
+    context: Mapped[dict | None] = mapped_column(JSON, default=dict)
+    scheduled_runs: Mapped[list | None] = mapped_column(JSON, default=list)
+    estimated_completion: Mapped[datetime | None] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now)
+
+
+class AgentMetricRecord(Base):
+    __tablename__ = "agent_metrics"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    agent_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    task_id: Mapped[str | None] = mapped_column(String(36))
+    success: Mapped[bool] = mapped_column(Boolean, default=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer)
+    error: Mapped[str | None] = mapped_column(Text)
+    user_rating: Mapped[int | None] = mapped_column(Integer)  # 1-5 or thumbs
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+
+
+class InteractionLog(Base):
+    __tablename__ = "interaction_logs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    conversation_id: Mapped[str | None] = mapped_column(String(36))
+    user_message: Mapped[str | None] = mapped_column(Text)
+    agent_id: Mapped[str | None] = mapped_column(String(64))
+    accepted: Mapped[bool | None] = mapped_column(Boolean)
+    feedback: Mapped[str | None] = mapped_column(Text)
+    meta: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now)
+
+
 class LogEntry(Base):
     __tablename__ = "logs"
 

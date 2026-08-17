@@ -42,6 +42,12 @@ dependencies = [
 
     # Voice — TTS
     "piper-tts>=1.2.0",
+    "soundfile>=0.12.0",
+
+    # Gmail / Google APIs
+    "google-api-python-client>=2.150.0",
+    "google-auth-oauthlib>=1.2.0",
+    "google-auth-httplib2>=0.2.0",
 
     # Wake word
     "openwakeword>=0.6.0",
@@ -92,12 +98,18 @@ packages = [
   "api",
   "briefing",
   "db",
+  "goals",
+  "integrations",
+  "learning",
   "memory",
+  "metrics",
   "models",
+  "notifications",
   "orchestrator",
   "scheduler",
   "security",
   "voice",
+  "watchers",
 ]
 
 [tool.ruff]

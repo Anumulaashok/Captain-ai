@@ -145,6 +145,35 @@ export const api = {
       post(`/api/agents/approvals/${requestId}`, { approved }),
     pending: () => get<{ pending: string[] }>("/api/agents/approvals/pending"),
   },
+
+  integrations: {
+    list: () => get<IntegrationStatus[]>("/api/integrations"),
+    get: (id: string) => get<IntegrationStatus>(`/api/integrations/${id}`),
+    auth: (id: string) => get<{ auth_url?: string; error?: string; missing_keys?: string[] }>(
+      `/api/integrations/${id}/auth`
+    ),
+    disconnect: (id: string) => post(`/api/integrations/${id}/disconnect`),
+    envStatus: (id: string) => get<{ configured: boolean; missing: string[] }>(
+      `/api/integrations/${id}/env-status`
+    ),
+  },
+
+  goals: {
+    list: () => get<Goal[]>("/api/goals"),
+    create: (data: { title: string; description?: string; target_date?: string }) =>
+      post<Goal>("/api/goals", data),
+    get: (id: string) => get<Goal>(`/api/goals/${id}`),
+  },
+
+  feedback: {
+    submit: (data: { conversation_id: string; rating: number; comment?: string }) =>
+      post("/api/feedback", data),
+  },
+
+  metrics: {
+    agents: () => get<AgentMetric[]>("/api/metrics/agents"),
+    improvements: () => get<ImprovementSuggestion[]>("/api/metrics/improvements"),
+  },
 };
 
 // ── Types ──────────────────────────────────────────────────────────
@@ -256,4 +285,40 @@ export interface BriefingItem {
   meta: Record<string, unknown>;
   is_read: boolean;
   created_at: string | null;
+}
+
+export interface IntegrationStatus {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  connected: boolean;
+  env_configured: boolean;
+  missing_env_keys: string[];
+}
+
+export interface Goal {
+  id: string;
+  title: string;
+  description: string;
+  target_date: string | null;
+  status: string;
+  progress: number;
+  milestones: unknown[];
+  blockers: unknown[];
+}
+
+export interface AgentMetric {
+  agent_id: string;
+  total_runs: number;
+  success_rate: number;
+  avg_latency_ms?: number;
+  error_patterns?: [string, number][];
+}
+
+export interface ImprovementSuggestion {
+  agent_id: string;
+  success_rate: number;
+  error_patterns: [string, number][];
+  suggestion: string;
 }

@@ -78,5 +78,71 @@ class ApprovalManager:
     def list_pending(self) -> list[str]:
         return list(self._pending.keys())
 
+    async def request_build_approval(
+        self,
+        agent_id: str,
+        spec: dict,
+        timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    ) -> bool:
+        """Pause until user approves building a new agent."""
+        from api.websocket import event_bus
+
+        request_id = str(uuid.uuid4())
+        loop = asyncio.get_event_loop()
+        future: asyncio.Future = loop.create_future()
+        self._pending[request_id] = future
+
+        await event_bus.publish("build_approval_request", {
+            "request_id": request_id,
+            "agent_id": agent_id,
+            "spec": spec,
+            "reason": f"Captain needs a new '{agent_id}' agent to handle this task.",
+            "requested_at": datetime.utcnow().isoformat(),
+            "timeout_seconds": timeout,
+        })
+
+        log.info(f"Build approval request {request_id} for agent {agent_id}")
+
+        try:
+            approved = await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError:
+            approved = False
+        finally:
+            self._pending.pop(request_id, None)
+        return approved
+
+    async def request_merge_approval(
+        self,
+        agent_id: str,
+        pr_title: str,
+        pr_url: str = "",
+        timeout: float = DEFAULT_TIMEOUT_SECONDS,
+    ) -> bool:
+        """Pause until user approves merging a PR."""
+        from api.websocket import event_bus
+
+        request_id = str(uuid.uuid4())
+        loop = asyncio.get_event_loop()
+        future: asyncio.Future = loop.create_future()
+        self._pending[request_id] = future
+
+        await event_bus.publish("merge_approval_request", {
+            "request_id": request_id,
+            "agent_id": agent_id,
+            "pr_title": pr_title,
+            "pr_url": pr_url,
+            "reason": f"Ready to create PR for {agent_id} agent.",
+            "requested_at": datetime.utcnow().isoformat(),
+            "timeout_seconds": timeout,
+        })
+
+        try:
+            approved = await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError:
+            approved = False
+        finally:
+            self._pending.pop(request_id, None)
+        return approved
+
 
 approval_manager = ApprovalManager()

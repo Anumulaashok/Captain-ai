@@ -218,9 +218,22 @@ async def aggregate(
         "Be concise. Don't say 'Agent 1 said...' — just give the answer."
     )
 
+    from models.gemini_client import gemini_client
     from models.ollama_client import OllamaClient
     from models.router import model_router, ModelRole
     from config import settings
+
+    synth_messages = [{"role": "user", "content": synthesis_prompt}]
+
+    # Prefer Gemini for synthesis (better quality, no tool-schema issues)
+    if await gemini_client.is_configured():
+        try:
+            text = ""
+            async for token in gemini_client.chat(settings.gemini_model, synth_messages, temperature=0.3, max_tokens=600):
+                text += token
+            return text.strip() or combined
+        except Exception as e:
+            log.debug(f"Gemini aggregation failed ({e}), trying Ollama")
 
     ollama = OllamaClient()
     if not await ollama.is_running():
@@ -229,12 +242,7 @@ async def aggregate(
     model = await model_router.get_model_for_role(ModelRole.CHAT)
     try:
         text = ""
-        async for token in ollama.chat(
-            model,
-            [{"role": "user", "content": synthesis_prompt}],
-            temperature=0.3,
-            max_tokens=600,
-        ):
+        async for token in ollama.chat(model, synth_messages, temperature=0.3, max_tokens=600):
             text += token
         return text.strip() or combined
     except Exception as e:

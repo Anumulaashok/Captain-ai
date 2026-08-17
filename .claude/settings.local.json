@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(ollama rm *)",
+      "Bash(ollama list *)",
+      "Read(//Users/anumulaashok/Downloads/**)",
+      "Read(//Users/anumulaashok/Desktop/**)",
+      "Bash(python3 -m json.tool)",
+      "Bash(rm ~/Downloads/android-studio-panda4-patch1-mac_arm.dmg)",
+      "Bash(rm ~/Downloads/test.zip)",
+      "Bash(rm ~/Downloads/aapl-lstm-stock-predictor.zip)",
+      "Bash(rm \"~/Downloads/Payslip_Apr_2026 \\(1\\).pdf\")",
+      "Bash(rm ~/Downloads/\"Payslip_Apr_2026 \\(1\\).pdf\")"
+    ]
+  }
+}

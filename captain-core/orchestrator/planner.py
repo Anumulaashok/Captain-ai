@@ -50,20 +50,32 @@ Reply ONLY with valid JSON matching this schema exactly:
 }}"""
 
 
-def _capability_fallback(intent: str, available_agents: list[str]) -> TaskPlan:
-    """Single-subtask fallback when LLM planning fails."""
-    intent_map = {
-        "coding_task":   "coding",
-        "email_task":    "email",
-        "browser_task":  "browser",
-        "calendar_task": "calendar",
-        "file_task":     "file",
-        "terminal_task": "terminal",
-        "research_task": "research",
+def _capability_fallback(
+    intent: str,
+    available_agents: list[str],
+    preferred_agents: list[str] | None = None,
+) -> TaskPlan:
+    """Single-subtask fallback when LLM planning fails.
+
+    preferred_agents is an ordered list of agent IDs to try first (e.g. from registry.route()).
+    Falls back to intent_map, then the first available agent.
+    """
+    intent_map: dict[str, list[str]] = {
+        "coding_task":   ["coding"],
+        "email_task":    ["gmail", "email"],   # gmail preferred; email = Apple Mail
+        "browser_task":  ["browser"],
+        "calendar_task": ["calendar"],
+        "file_task":     ["file"],
+        "terminal_task": ["terminal"],
+        "research_task": ["research", "browser"],
+        "briefing_task": ["briefing"],
     }
-    agent_id = intent_map.get(intent, "research")
-    if agent_id not in available_agents and available_agents:
+    candidates = preferred_agents or intent_map.get(intent, [])
+    agent_id = next((a for a in candidates if a in available_agents), None)
+    if not agent_id and available_agents:
         agent_id = available_agents[0]
+    if not agent_id:
+        return TaskPlan(subtasks=[], rationale="no agents available")
     return TaskPlan(
         subtasks=[SubTask(id="t1", agent_id=agent_id, subtask="Handle the user's request.")],
         rationale="fallback: single agent",
@@ -74,10 +86,13 @@ async def plan(
     user_message: str,
     intent: str,
     available_agents: list[str],
+    preferred_agents: list[str] | None = None,
 ) -> TaskPlan:
     """
     Ask the RESEARCH model to decompose the request into a TaskPlan.
     Falls back to a single-subtask plan if LLM or parsing fails.
+
+    preferred_agents: ordered list of agent IDs to try first (passed from registry.route()).
     """
     from models.ollama_client import OllamaClient
     from models.router import model_router, ModelRole
@@ -87,7 +102,7 @@ async def plan(
 
     # For single-intent tasks (not multi_agent), skip LLM decomposition
     if intent != "multi_agent":
-        return _capability_fallback(intent, available_agents)
+        return _capability_fallback(intent, available_agents, preferred_agents)
 
     ollama = OllamaClient()
     if not await ollama.is_running():

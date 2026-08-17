@@ -22,6 +22,13 @@ DEFAULT_AGENTS = [
         "is_enabled": False,
     },
     {
+        "id": "gmail",
+        "name": "Gmail Agent",
+        "description": "Read and search Gmail via Gmail API (OAuth) or IMAP App Password",
+        "permissions": ["network:fetch"],
+        "is_enabled": True,
+    },
+    {
         "id": "browser",
         "name": "Browser Agent",
         "description": "Search the web, open URLs and summarize pages",
@@ -56,6 +63,41 @@ DEFAULT_AGENTS = [
         "permissions": ["network:fetch", "browser:open"],
         "is_enabled": True,
     },
+    {
+        "id": "github",
+        "name": "GitHub Agent",
+        "description": "Access repositories, PRs, issues, and CI status",
+        "permissions": ["network:fetch"],
+        "is_enabled": True,
+    },
+    {
+        "id": "finance",
+        "name": "Finance Agent",
+        "description": "Monitor accounts, spending, and financial alerts",
+        "permissions": ["network:fetch"],
+        "is_enabled": False,
+    },
+    {
+        "id": "briefing",
+        "name": "Briefing Agent",
+        "description": "Morning briefing and status updates",
+        "permissions": ["network:fetch"],
+        "is_enabled": True,
+    },
+    {
+        "id": "builder",
+        "name": "Agent Builder",
+        "description": "Builds new agents when Captain lacks capability",
+        "permissions": ["filesystem:read", "filesystem:write", "network:fetch"],
+        "is_enabled": True,
+    },
+    {
+        "id": "goal",
+        "name": "Goal Agent",
+        "description": "Tracks goals, milestones, blockers, and progress",
+        "permissions": ["network:fetch"],
+        "is_enabled": True,
+    },
 ]
 
 
@@ -69,4 +111,7 @@ async def seed_defaults() -> None:
             if not existing:
                 session.add(AgentRecord(**data))
                 log.info(f"Seeded agent: {data['id']}")
+            else:
+                # Update description for existing records
+                existing.description = data["description"]
         await session.commit()

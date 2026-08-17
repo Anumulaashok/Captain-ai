@@ -8,7 +8,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import settings
 from db.database import init_db
 from api.websocket import event_bus, router as ws_router
-from api.routes import chat, agents, models, memory, voice, settings as settings_router, accounts
+from api.routes import (
+    chat, agents, models, memory, voice,
+    settings as settings_router, accounts, integrations, goals,
+)
 
 
 logging.basicConfig(
@@ -30,6 +33,25 @@ async def lifespan(app: FastAPI):
     # Seed default agents into DB if first run
     from db.seed import seed_defaults
     await seed_defaults()
+
+    # Pre-grant safe read-only permissions so agents don't ask for them every run.
+    # Sensitive write/execute permissions (email:write, terminal:execute) still require
+    # user approval each session.
+    from security.permissions import permission_manager
+    from agents.base import Permission
+    safe_grants = {
+        "browser":  [Permission.NETWORK_FETCH, Permission.BROWSER_OPEN],
+        "research": [Permission.NETWORK_FETCH, Permission.BROWSER_OPEN],
+        "gmail":    [Permission.NETWORK_FETCH],
+        "github":   [Permission.NETWORK_FETCH],
+        "file":     [Permission.FILESYSTEM_READ],
+        "briefing": [Permission.NETWORK_FETCH],
+    }
+    for agent_id, perms in safe_grants.items():
+        for perm in perms:
+            if not await permission_manager.has_permission(agent_id, perm):
+                await permission_manager.grant(agent_id, perm)
+    log.info("Safe permissions pre-granted")
 
     # Verify Pinecone connectivity
     if settings.pinecone_configured:
@@ -73,10 +95,36 @@ async def lifespan(app: FastAPI):
     from scheduler.service import start_scheduler
     start_scheduler()
 
+    # Start background watchers
+    try:
+        from watchers.scheduler import watcher_scheduler
+        watcher_scheduler.start()
+        log.info("Background watchers started")
+    except Exception as e:
+        log.warning(f"Watchers not started: {e}")
+
+    # Start briefing scheduler (morning / EOD)
+    try:
+        from briefing.scheduler import briefing_scheduler
+        briefing_scheduler.start()
+        log.info("Briefing scheduler started")
+    except Exception as e:
+        log.warning(f"Briefing scheduler not started: {e}")
+
     log.info(f"Captain AI ready on http://{settings.app_host}:{settings.app_port}")
     yield
 
     log.info("Captain AI shutting down...")
+    try:
+        from watchers.scheduler import watcher_scheduler
+        watcher_scheduler.stop()
+    except Exception:
+        pass
+    try:
+        from briefing.scheduler import briefing_scheduler
+        briefing_scheduler.stop()
+    except Exception:
+        pass
     # Stop background scheduler
     try:
         from scheduler.service import stop_scheduler
@@ -119,6 +167,8 @@ app.include_router(memory.router,   prefix="/api", tags=["memory"])
 app.include_router(voice.router,    prefix="/api", tags=["voice"])
 app.include_router(settings_router.router, prefix="/api", tags=["settings"])
 app.include_router(accounts.router, prefix="/api", tags=["accounts"])
+app.include_router(integrations.router, prefix="/api", tags=["integrations"])
+app.include_router(goals.router, prefix="/api", tags=["goals"])
 
 # WebSocket endpoint
 app.include_router(ws_router, tags=["ws"])

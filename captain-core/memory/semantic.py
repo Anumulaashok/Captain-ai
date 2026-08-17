@@ -33,15 +33,32 @@ class SemanticMemory:
         return self._ollama
 
     async def ensure_index(self) -> None:
-        """Create Pinecone serverless index if it doesn't exist."""
+        """Create Pinecone serverless index if it doesn't exist.
+
+        If the index exists but has the wrong dimension (e.g. was created for OpenAI 1536
+        but we're now using a local 768-dim model), delete and recreate it automatically.
+        """
         if not settings.pinecone_configured:
             log.warning("Pinecone not configured — skipping index creation")
             return
         try:
+            from pinecone import ServerlessSpec
             pc = self._get_pinecone()
-            existing = [idx.name for idx in pc.list_indexes()]
+            existing = {idx.name: idx for idx in pc.list_indexes()}
+
+            if settings.pinecone_index_name in existing:
+                # Check if the existing index has the correct dimension
+                idx_info = existing[settings.pinecone_index_name]
+                current_dim = getattr(idx_info, "dimension", None)
+                if current_dim is not None and current_dim != settings.pinecone_dimension:
+                    log.warning(
+                        f"Pinecone index '{settings.pinecone_index_name}' has dimension {current_dim} "
+                        f"but config expects {settings.pinecone_dimension}. Recreating index."
+                    )
+                    pc.delete_index(settings.pinecone_index_name)
+                    existing.pop(settings.pinecone_index_name)
+
             if settings.pinecone_index_name not in existing:
-                from pinecone import ServerlessSpec
                 pc.create_index(
                     name=settings.pinecone_index_name,
                     dimension=settings.pinecone_dimension,
@@ -51,7 +68,8 @@ class SemanticMemory:
                         region=settings.pinecone_region,
                     ),
                 )
-                log.info(f"Created Pinecone index: {settings.pinecone_index_name}")
+                log.info(f"Created Pinecone index '{settings.pinecone_index_name}' (dim={settings.pinecone_dimension})")
+
             self._index = pc.Index(settings.pinecone_index_name)
             log.info("Pinecone index ready")
         except Exception as e:

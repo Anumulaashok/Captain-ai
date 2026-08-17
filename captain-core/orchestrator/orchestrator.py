@@ -77,77 +77,98 @@ class Orchestrator:
                         full_response += event["data"].get("text", "")
                     yield event
             else:
-                # Build task plan (single subtask for focused intents, multi for multi_agent)
-                task_plan = await plan(user_message, intent.intent, available_ids)
+                handled = await self._pre_check_routing(
+                    user_message, conversation_id, intent, routed, routed_enabled
+                )
+                if handled is not None:
+                    async for event in handled:
+                        if event["type"] == "token":
+                            full_response += event["data"].get("text", "")
+                        yield event
+                else:
+                    preferred_ids = [a.id for a in routed_enabled] if routed_enabled else None
+                    task_plan = await plan(user_message, intent.intent, available_ids, preferred_ids)
 
-                yield {
-                    "type": "plan_created",
-                    "data": {
-                        "parent_task_id": parent_task_id,
-                        "subtasks": [st.model_dump() for st in task_plan.subtasks],
-                        "rationale": task_plan.rationale,
-                    },
-                }
-                await event_bus.publish("plan_created", {
-                    "parent_task_id": parent_task_id,
-                    "subtask_count": len(task_plan.subtasks),
-                    "agents": [st.agent_id for st in task_plan.subtasks],
-                })
-
-                # ── Execution callbacks that stream events ──
-                async def on_start(subtask):
-                    agent = agent_registry.get(subtask.agent_id)
-                    name = agent.name if agent else subtask.agent_id
-                    event = {
-                        "type": "agent_started",
+                    yield {
+                        "type": "plan_created",
                         "data": {
-                            "agent_id": subtask.agent_id,
-                            "agent_name": name,
-                            "subtask_id": subtask.id,
-                            "subtask": subtask.subtask[:120],
+                            "parent_task_id": parent_task_id,
+                            "subtasks": [st.model_dump() for st in task_plan.subtasks],
+                            "rationale": task_plan.rationale,
                         },
                     }
-                    await event_bus.publish("agent_started", event["data"])
-
-                async def on_done(subtask, result):
-                    event_data = {
-                        "agent_id": subtask.agent_id,
-                        "subtask_id": subtask.id,
-                        "success": result.success,
-                        "tool_calls": len(result.tool_calls),
-                        "artifacts": [a.model_dump() for a in result.artifacts],
-                        "latency_ms": result.latency_ms,
-                    }
-                    await event_bus.publish("agent_finished", event_data)
-
-                # ── Run the plan ──
-                results = await execute(
-                    task_plan,
-                    conversation_id,
-                    parent_task_id=parent_task_id,
-                    on_subtask_start=on_start,
-                    on_subtask_done=on_done,
-                )
-
-                # Stream a final synthetic agent_finished for the whole plan
-                all_artifacts = [a for r in results for a in r.artifacts]
-                yield {
-                    "type": "agent_finished",
-                    "data": {
+                    await event_bus.publish("plan_created", {
                         "parent_task_id": parent_task_id,
-                        "subtask_count": len(results),
-                        "success": any(r.success for r in results),
-                        "artifacts": [a.model_dump() for a in all_artifacts],
-                    },
-                }
+                        "subtask_count": len(task_plan.subtasks),
+                        "agents": [st.agent_id for st in task_plan.subtasks],
+                    })
 
-                # Aggregate and stream as tokens
-                full_response = await aggregate(results, user_message)
-                words = full_response.split(" ")
-                for i, word in enumerate(words):
-                    done = i == len(words) - 1
-                    yield {"type": "token", "data": {"text": word + ("" if done else " "), "done": done}}
-                    await asyncio.sleep(0)
+                    # Yield agent_started for each subtask upfront (SSE)
+                    for st in task_plan.subtasks:
+                        agent = agent_registry.get(st.agent_id)
+                        name = agent.name if agent else st.agent_id
+                        start_event = {
+                            "type": "agent_started",
+                            "data": {
+                                "agent_id": st.agent_id,
+                                "agent_name": name,
+                                "subtask_id": st.id,
+                                "subtask": st.subtask[:120],
+                            },
+                        }
+                        yield start_event
+                        await event_bus.publish("agent_started", start_event["data"])
+
+                    async def on_start(subtask):
+                        await event_bus.publish("agent_started", {
+                            "agent_id": subtask.agent_id,
+                            "subtask_id": subtask.id,
+                        })
+
+                    async def on_done(subtask, result):
+                        from learning.engine import learning_engine
+                        from metrics.tracker import metrics_tracker
+                        await metrics_tracker.record_run(
+                            subtask.agent_id, subtask.id, result.success, result.latency_ms, result.error
+                        )
+                        adapted = await learning_engine.adapt_response(result.response)
+                        if adapted != result.response:
+                            result.response = adapted
+                        event_data = {
+                            "agent_id": subtask.agent_id,
+                            "subtask_id": subtask.id,
+                            "success": result.success,
+                            "tool_calls": len(result.tool_calls),
+                            "artifacts": [a.model_dump() for a in result.artifacts],
+                            "latency_ms": result.latency_ms,
+                        }
+                        await event_bus.publish("agent_finished", event_data)
+
+                    results = await execute(
+                        task_plan,
+                        conversation_id,
+                        parent_task_id=parent_task_id,
+                        on_subtask_start=on_start,
+                        on_subtask_done=on_done,
+                    )
+
+                    all_artifacts = [a for r in results for a in r.artifacts]
+                    yield {
+                        "type": "agent_finished",
+                        "data": {
+                            "parent_task_id": parent_task_id,
+                            "subtask_count": len(results),
+                            "success": any(r.success for r in results),
+                            "artifacts": [a.model_dump() for a in all_artifacts],
+                        },
+                    }
+
+                    full_response = await aggregate(results, user_message)
+                    words = full_response.split(" ")
+                    for i, word in enumerate(words):
+                        done = i == len(words) - 1
+                        yield {"type": "token", "data": {"text": word + ("" if done else " "), "done": done}}
+                        await asyncio.sleep(0)
 
         # Persist assistant response
         latency_ms = int((time.time() - t_start) * 1000)
@@ -167,9 +188,29 @@ class Orchestrator:
     async def _llm_chat(
         self, user_message: str, conversation_id: str, intent: str
     ) -> AsyncGenerator[dict, None]:
-        """Direct LLM response using the role-appropriate model."""
+        """Direct LLM response — prefers Gemini when configured, falls back to Ollama."""
+        from models.gemini_client import gemini_client
         from models.ollama_client import OllamaClient
+        from config import settings
 
+        context = await memory_manager.retrieve_context(user_message, conversation_id)
+        messages = memory_manager.build_messages(context, user_message)
+
+        # ── Try Gemini first ──────────────────────────────────────────────
+        if await gemini_client.is_configured():
+            model_label = f"Gemini ({settings.gemini_model})"
+            role = INTENT_TO_ROLE.get(intent, ModelRole.CHAT)
+            yield {"type": "model_used", "data": {"role": role.value, "model": model_label}}
+            log.info(f"Chat via Gemini: {settings.gemini_model}")
+            try:
+                async for token in gemini_client.chat(settings.gemini_model, messages):
+                    yield {"type": "token", "data": {"text": token, "done": False}}
+                yield {"type": "token", "data": {"text": "", "done": True}}
+                return
+            except Exception as e:
+                log.error(f"Gemini chat error: {e} — falling back to Ollama")
+
+        # ── Ollama fallback ───────────────────────────────────────────────
         ollama = OllamaClient()
         if not await ollama.is_running():
             yield {"type": "token", "data": {
@@ -194,20 +235,115 @@ class Orchestrator:
             return
 
         yield {"type": "model_used", "data": {"role": role.value, "model": model}}
-
-        context = await memory_manager.retrieve_context(user_message, conversation_id)
-        messages = memory_manager.build_messages(context, user_message)
-
-        log.info(f"Chat using model: {model} (role: {role.value})")
+        log.info(f"Chat via Ollama: {model} (role: {role.value})")
         try:
             async for token in ollama.chat(model, messages):
                 yield {"type": "token", "data": {"text": token, "done": False}}
             yield {"type": "token", "data": {"text": "", "done": True}}
         except Exception as e:
-            log.error(f"Chat error with {model}: {e}")
+            log.error(f"Ollama chat error with {model}: {e}")
             yield {"type": "token", "data": {
                 "text": f"⚠️ Error with model `{model}`: {e}",
                 "done": True,
+            }}
+
+    async def _pre_check_routing(
+        self,
+        user_message: str,
+        conversation_id: str,
+        intent,
+        routed,
+        routed_enabled,
+    ):
+        """
+        Returns an async generator of events if routing was handled early
+        (missing agent → builder, missing integration → prompt).
+        Returns None to continue with normal planning.
+        """
+        # Missing integration check
+        if routed_enabled:
+            for agent in routed_enabled:
+                if agent.required_integrations:
+                    ok, missing = await agent.check_integrations()
+                    # Gmail supports IMAP app-password fallback
+                    if not ok and hasattr(agent, "_get_imap_credentials"):
+                        if await agent._get_imap_credentials():
+                            ok = True
+                    if not ok:
+                        response = (
+                            f"I need {', '.join(missing)} connected to handle this. "
+                            "Please connect in Settings > Integrations."
+                        )
+                        await event_bus.publish("integration_required", {
+                            "integrations": missing,
+                            "agent_id": agent.id,
+                        })
+
+                        async def _integration_events():
+                            for word in response.split(" "):
+                                yield {"type": "token", "data": {"text": word + " ", "done": False}}
+                            yield {"type": "token", "data": {"text": "", "done": True}}
+                            yield {
+                                "type": "integration_required",
+                                "data": {"integrations": missing},
+                            }
+
+                        return _integration_events()
+
+        # Missing agent in plan — check if planner might pick unknown agent
+        for st_agent in [a.id for a in routed]:
+            if st_agent and not agent_registry.has_agent(st_agent):
+                return self._handle_missing_agent(
+                    user_message, conversation_id, st_agent, intent.intent
+                )
+
+        return None
+
+    async def _handle_missing_agent(
+        self,
+        user_message: str,
+        conversation_id: str,
+        agent_id: str,
+        intent: str,
+    ) -> AsyncGenerator[dict, None]:
+        """Route to AgentBuilder when a required agent doesn't exist."""
+        log.info(f"Agent '{agent_id}' missing — routing to builder")
+        builder = agent_registry.get("builder")
+        if not builder:
+            yield {"type": "token", "data": {
+                "text": f"I don't have a '{agent_id}' agent yet and the builder is unavailable.",
+                "done": True,
+            }}
+            return
+
+        yield {
+            "type": "agent_started",
+            "data": {"agent_id": "builder", "agent_name": "Agent Builder", "subtask_id": ""},
+        }
+        await event_bus.publish("build_agent_proposed", {"agent_id": agent_id, "intent": intent})
+
+        task = AgentTask(
+            agent_id="builder",
+            intent="builder_task",
+            user_message=(
+                f"The user needs capability handled by a '{agent_id}' agent. "
+                f"User request: {user_message}\n"
+                f"Propose and build this agent if approved."
+            ),
+            context={"missing_agent": agent_id, "source_intent": intent},
+        )
+        result = await builder.run(task)
+        yield {
+            "type": "agent_finished",
+            "data": {"agent_id": "builder", "success": result.success, "artifacts": [
+                a.model_dump() for a in result.artifacts
+            ]},
+        }
+        words = (result.response or "").split(" ")
+        for i, word in enumerate(words):
+            yield {"type": "token", "data": {
+                "text": word + ("" if i == len(words) - 1 else " "),
+                "done": i == len(words) - 1,
             }}
 
     async def _filter_enabled(self, agents) -> list:

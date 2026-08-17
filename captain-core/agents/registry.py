@@ -11,6 +11,7 @@ log = logging.getLogger(__name__)
 AGENT_MODULES = {
     "coding":   "agents.coding.agent",
     "email":    "agents.email.agent",
+    "gmail":    "agents.gmail.agent",
     "browser":  "agents.browser.agent",
     "calendar": "agents.calendar.agent",
     "file":     "agents.file.agent",
@@ -19,6 +20,8 @@ AGENT_MODULES = {
     "github":   "agents.github.agent",
     "finance":  "agents.finance.agent",
     "briefing": "agents.briefing.agent",
+    "builder":  "agents.builder.agent",
+    "goal":     "agents.goal.agent",
 }
 
 
@@ -80,7 +83,7 @@ class AgentRegistry:
         self._load_all()
         keyword_map = {
             "coding_task":   ["coding"],
-            "email_task":    ["email"],
+            "email_task":    ["gmail", "email"],   # gmail first (IMAP, always works); email = Apple Mail fallback
             "browser_task":  ["browser"],
             "calendar_task": ["calendar"],
             "file_task":     ["file"],
@@ -88,9 +91,50 @@ class AgentRegistry:
             "research_task": ["research", "browser"],
             "multi_agent":   ["coding", "file", "research"],
             "briefing_task": ["briefing"],
+            "goal_task":     ["goal"],
         }
         agent_ids = keyword_map.get(intent, [])
         return [self._agents[aid] for aid in agent_ids if aid in self._agents]
+
+    def has_agent(self, agent_id: str) -> bool:
+        self._load_all()
+        return agent_id in self._agents
+
+    def register_dynamic(self, agent_id: str) -> bool:
+        """Hot-load an agent module at runtime."""
+        if agent_id in self._agents:
+            return True
+        module_path = f"agents.{agent_id}.agent"
+        try:
+            import importlib
+            module = importlib.import_module(module_path)
+            cls: Type[AgentBase] = getattr(module, "Agent")
+            self._agents[agent_id] = cls()
+            AGENT_MODULES[agent_id] = module_path
+            log.info(f"Dynamically registered agent: {agent_id}")
+            return True
+        except Exception as e:
+            log.error(f"Dynamic registration failed for {agent_id}: {e}")
+            return False
+
+    def reload_agent(self, agent_id: str) -> bool:
+        """Reload an agent module after code changes."""
+        import importlib
+        module_path = AGENT_MODULES.get(agent_id)
+        if not module_path:
+            return False
+        try:
+            if module_path in importlib.sys.modules:
+                module = importlib.reload(importlib.sys.modules[module_path])
+            else:
+                module = importlib.import_module(module_path)
+            cls: Type[AgentBase] = getattr(module, "Agent")
+            self._agents[agent_id] = cls()
+            log.info(f"Reloaded agent: {agent_id}")
+            return True
+        except Exception as e:
+            log.error(f"Reload failed for {agent_id}: {e}")
+            return False
 
     def find_by_capability(self, capability: str) -> list[AgentBase]:
         """Return agents that declare a given capability string."""

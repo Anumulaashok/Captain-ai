@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     # Pinecone
     pinecone_api_key: str = ""
     pinecone_index_name: str = "captain-memory"
-    pinecone_dimension: int = 1536
+    pinecone_dimension: int = 768   # nomic-embed-text (local); change to 1536 for OpenAI ada-002
     pinecone_cloud: str = "aws"
     pinecone_region: str = "us-east-1"
 
@@ -43,10 +43,21 @@ class Settings(BaseSettings):
     voice_mode: str = "wake_word"
     wake_word_threshold: float = 0.85
 
-    # Future cloud plugins
+    # Cloud LLM plugins
     openai_api_key: str = ""
     anthropic_api_key: str = ""
     gemini_api_key: str = ""
+    gemini_model: str = "gemini-2.0-flash"   # model used when Gemini is the active provider
+
+    # OAuth integrations
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    google_redirect_uri: str = ""
+    github_client_id: str = ""
+    github_client_secret: str = ""
+    slack_client_id: str = ""
+    slack_client_secret: str = ""
+    oauth_redirect_uri: str = ""
 
     @property
     def pinecone_configured(self) -> bool:

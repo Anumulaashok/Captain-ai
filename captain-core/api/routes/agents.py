@@ -84,15 +84,32 @@ async def get_permissions(agent_id: str):
 
 class ApprovalRequest(BaseModel):
     approved: bool
+    agent_id: str = ""      # sent by frontend so grant works even if Future is gone
+    permission: str = ""    # same
 
 
 @router.post("/agents/approvals/{request_id}")
 async def resolve_approval(request_id: str, req: ApprovalRequest):
-    """Called by the UI Approve/Deny modal to resume a paused agent."""
+    """Called by the UI Approve/Deny modal to resume a paused agent.
+
+    Always returns 200 — even if the Future is gone (e.g. server reloaded while
+    the modal was open).  When approved, also grants the permission directly so
+    the agent won't be blocked again.
+    """
     from security.approvals import approval_manager
-    ok = approval_manager.resolve(request_id, req.approved)
-    if not ok:
-        raise HTTPException(status_code=404, detail="Approval request not found or already resolved")
+    from security.permissions import permission_manager
+    from agents.base import Permission
+
+    # Unblock the waiting Future (may already be gone — that's OK)
+    approval_manager.resolve(request_id, req.approved)
+
+    # Grant / record the permission directly so it persists regardless
+    if req.approved and req.agent_id and req.permission:
+        try:
+            await permission_manager.grant(req.agent_id, Permission(req.permission))
+        except ValueError:
+            pass  # unknown permission string — ignore
+
     return {"ok": True, "approved": req.approved}
 
 

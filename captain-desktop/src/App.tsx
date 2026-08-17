@@ -11,6 +11,7 @@ import SettingsPage from "./pages/Settings";
 import Accounts from "./pages/Accounts";
 import CommandCenter from "./pages/CommandCenter";
 import PermissionModal from "./components/PermissionModal";
+import ApprovalModal from "./components/ApprovalModal";
 import { wsClient } from "./lib/ws";
 
 const NAV = [
@@ -96,6 +97,7 @@ export default function App() {
       </div>
       {/* Global permission approval modal — floats above all pages */}
       <PermissionModal />
+      <ApprovalModal />
     </BrowserRouter>
   );
 }
