@@ -269,6 +269,14 @@ def _call_tool(tool: str, parameters: dict, speak: Callable | None) -> str:
         from actions.claude_dev import claude_dev
         return claude_dev(parameters=parameters, player=None, speak=speak) or "Done."
 
+    elif tool == "marketing_research":
+        from actions.marketing_research import marketing_research
+        return marketing_research(parameters=parameters, player=None, speak=speak) or "Done."
+
+    elif tool == "self_heal":
+        from actions.self_heal import self_heal
+        return self_heal(parameters=parameters, player=None, speak=speak) or "Done."
+
     else:
         print(f"[Executor] ⚠️ Unknown tool '{tool}' — falling back to generated_code")
         return _run_generated_code(f"Accomplish this task: {parameters}", speak=speak)

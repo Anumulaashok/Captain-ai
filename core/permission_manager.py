@@ -20,6 +20,7 @@ PERMISSION_REQUIRED: dict[str, tuple[str, str]] = {
     "slack_reader":     ("Slack Access",     "Read your Slack messages"),
     "browser_control":  ("Browser Control",  "Automate and control your web browser"),
     "claude_dev":       ("Claude Dev Agent", "Run Claude Code CLI in your repos — write code, git push, create PRs, send Slack updates"),
+    "self_heal_code":   ("Self-Heal Code",   "Commit and push a code fix Jarvis wrote for its own bugs, and open a pull request"),
 }
 
 

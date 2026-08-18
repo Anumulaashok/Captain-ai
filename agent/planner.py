@@ -149,6 +149,15 @@ integration_setup
   service: string (optional: gmail | slack | github | notion | linear | jira | google_calendar)
   key: string (optional: credential key to set)
   value: string (optional: credential value)
+
+marketing_research
+  niche: string (required) — the market/audience/problem space to research, e.g. "freelancer invoicing"
+  Use this for finding real-world pain points and turning them into SaaS product ideas with pricing and go-to-market plans.
+
+self_heal
+  problem: string (required) — the bug/error to fix in Jarvis's OWN source code
+  file: string (optional) — relative path to the file to fix, if known; otherwise Jarvis figures out which file
+  Use this ONLY when the user reports a bug in Jarvis itself (this codebase), not for browser/website issues.
 EXAMPLES:
 
 EXAMPLES (note depends_on for parallel execution):
