@@ -1,3 +1,4 @@
+import os
 import time
 import subprocess
 import platform
@@ -83,12 +84,14 @@ def _normalize(raw: str) -> str:
     return raw  
 
 def _launch_windows(app_name: str) -> bool:
-
-    if shutil.which(app_name) or shutil.which(app_name.split(".")[0]):
+    # No shell=True anywhere here — app_name ultimately comes from voice/text
+    # transcription, so it must never reach a real shell. shutil.which() resolves
+    # to a concrete executable path, which we launch directly as argv[0].
+    resolved = shutil.which(app_name) or shutil.which(app_name.split(".")[0])
+    if resolved:
         try:
             subprocess.Popen(
-                app_name,
-                shell=True,
+                [resolved],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -99,7 +102,9 @@ def _launch_windows(app_name: str) -> bool:
 
     if ":" in app_name:
         try:
-            subprocess.Popen(f"start {app_name}", shell=True)
+            # os.startfile is the native Windows API for URI/shell-verb launches
+            # (e.g. "ms-settings:") — no subprocess, no shell involved at all.
+            os.startfile(app_name)  # type: ignore[attr-defined]
             time.sleep(1.0)
             return True
         except Exception:

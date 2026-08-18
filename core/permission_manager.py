@@ -15,6 +15,7 @@ PERMISSION_REQUIRED: dict[str, tuple[str, str]] = {
     "computer_control": ("Computer Control", "Control your mouse and keyboard"),
     "file_controller":  ("File System",      "Create, read, modify, move, or delete files on your computer"),
     "dev_agent":        ("Dev Agent",        "Write and execute code projects on your computer"),
+    "code_helper":      ("Code Helper",      "Write and run custom code on your computer"),
     "generated_code":   ("Code Execution",   "Generate and run custom Python code on your computer"),
     "email_reader":     ("Email Access",     "Read your Gmail inbox"),
     "slack_reader":     ("Slack Access",     "Read your Slack messages"),
@@ -22,6 +23,10 @@ PERMISSION_REQUIRED: dict[str, tuple[str, str]] = {
     "claude_dev":       ("Claude Dev Agent", "Run Claude Code CLI in your repos — write code, git push, create PRs, send Slack updates"),
     "self_heal_code":   ("Self-Heal Code",   "Commit and push a code fix Jarvis wrote for its own bugs, and open a pull request"),
 }
+
+# Tools that generate and execute NEW code on every call — approving once must not grant
+# unlimited unreviewed execution for the rest of the session. Every call re-prompts.
+ALWAYS_REVIEW: set[str] = {"dev_agent", "code_helper", "generated_code"}
 
 
 class PermissionManager:
@@ -58,17 +63,23 @@ class PermissionManager:
         if tool not in PERMISSION_REQUIRED:
             return True
 
-        with self._lock:
-            if tool in self._granted:
-                return True
-            if tool in self._denied:
-                return False
+        always_review = tool in ALWAYS_REVIEW
+        if not always_review:
+            with self._lock:
+                if tool in self._granted:
+                    return True
+                if tool in self._denied:
+                    return False
 
         if self._request_fn is None:
             return True
 
         display_name, description = PERMISSION_REQUIRED[tool]
         allowed = self._request_fn(tool, display_name, description)
+
+        if always_review:
+            # Every call re-prompts — never cache grant/denial for code-execution tools.
+            return allowed
 
         with self._lock:
             if allowed:

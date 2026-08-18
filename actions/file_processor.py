@@ -779,6 +779,11 @@ def file_processor(parameters: dict, player=None, speak=None) -> str:
         return "No file path provided."
 
     path = Path(file_path_str)
+
+    from actions.file_controller import _is_safe_path
+    if not _is_safe_path(path):
+        return "I can only process files inside your home folder, sir."
+
     if not path.exists():
         return f"File not found: {file_path_str}"
     if not path.is_file():
