@@ -35,7 +35,7 @@ class Task:
 
 
 class TaskQueue:
-    def __init__(self, max_concurrent: int = 1):
+    def __init__(self, max_concurrent: int = 3):
         self._queue:        list[Task]       = []
         self._lock:         threading.Lock   = threading.Lock()
         self._condition:    threading.Condition = threading.Condition(self._lock)
@@ -207,7 +207,7 @@ class TaskQueue:
         with self._condition:
             self._condition.notify()
 
-_queue        = TaskQueue()
+_queue        = TaskQueue(max_concurrent=3)
 _queue_started = False
 _queue_lock    = threading.Lock()
 

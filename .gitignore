@@ -1,0 +1,24 @@
+# Logs — keep the folder, ignore the files
+logs/*.log
+logs/startup_*.log
+
+# Legacy log files at root
+jarvis.log
+jarvis_start.log
+jarvis.error.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# Config secrets
+config/api_keys.json
+config/integrations.json
+config/tokens/
+
+# Memory / state
+memory/long_term.json
+memory/tasks.json
+core/active_persona.json

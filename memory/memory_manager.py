@@ -115,6 +115,33 @@ def update_memory(memory_update: dict) -> dict:
     if _recursive_update(memory, memory_update):
         save_memory(memory)
         print(f"[Memory] 💾 Saved: {list(memory_update.keys())}")
+
+        # Mirror to Pinecone for semantic search
+        try:
+            from integrations.pinecone_memory import store as pc_store, is_ready as pc_ready
+            if pc_ready():
+                for cat, items in memory_update.items():
+                    if isinstance(items, dict):
+                        for k, v in items.items():
+                            val = v.get("value") if isinstance(v, dict) else str(v)
+                            if val:
+                                pc_store(cat, k, val)
+        except Exception as e:
+            print(f"[Memory] Pinecone mirror skipped: {e}")
+
+        # Mirror to PostgreSQL
+        try:
+            from integrations.pg_store import upsert_memory as pg_upsert, is_ready as pg_ready
+            if pg_ready():
+                for cat, items in memory_update.items():
+                    if isinstance(items, dict):
+                        for k, v in items.items():
+                            val = v.get("value") if isinstance(v, dict) else str(v)
+                            if val:
+                                pg_upsert(cat, k, val)
+        except Exception as e:
+            print(f"[Memory] PostgreSQL mirror skipped: {e}")
+
     return memory
 
 def format_memory_for_prompt(memory: dict | None) -> str:

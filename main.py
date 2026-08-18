@@ -6,6 +6,11 @@ import sys
 import traceback
 from pathlib import Path
 
+# Logging must be set up before any other import so all modules inherit it
+from core.logger import setup_logging, get_logger
+setup_logging()
+_log = get_logger("captain_jack.main")
+
 import sounddevice as sd
 from google import genai
 from google.genai import types
@@ -31,6 +36,7 @@ from actions.dev_agent         import dev_agent
 from actions.web_search        import web_search as web_search_action
 from actions.computer_control  import computer_control
 from actions.game_updater      import game_updater
+from core.permission_manager   import get_permission_manager
 
 
 def get_base_dir():
@@ -39,29 +45,67 @@ def get_base_dir():
     return Path(__file__).resolve().parent
 
 
-BASE_DIR        = get_base_dir()
-API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
-PROMPT_PATH     = BASE_DIR / "core" / "prompt.txt"
-LIVE_MODEL          = "models/gemini-2.5-flash-native-audio-preview-12-2025"
-CHANNELS            = 1
-SEND_SAMPLE_RATE    = 16000
-RECEIVE_SAMPLE_RATE = 24000
-CHUNK_SIZE          = 1024
+BASE_DIR             = get_base_dir()
+API_CONFIG_PATH      = BASE_DIR / "config" / "api_keys.json"
+PROMPT_PATH          = BASE_DIR / "core" / "prompt.txt"
+PERSONAS_DIR         = BASE_DIR / "core" / "personas"
+ACTIVE_PERSONA_PATH  = BASE_DIR / "core" / "active_persona.json"
+LIVE_MODEL           = "models/gemini-2.5-flash-native-audio-preview-12-2025"
+CHANNELS             = 1
+SEND_SAMPLE_RATE     = 16000
+RECEIVE_SAMPLE_RATE  = 24000
+CHUNK_SIZE           = 1024
+
+PERSONA_VOICES = {
+    "tommy": "Kore",
+    "gibbs": "Orus",
+    "jack":  "Puck",
+}
+
+PERSONA_GREETINGS = {
+    "tommy": "You just came online as Tommy. Greet the user in one professional sentence.",
+    "gibbs": "You just came online as Joshamee Gibbs, first mate of the Black Pearl. Give a short loyal sailor greeting to the Captain — one or two salty seafarer lines.",
+    "jack":  "You just came online as Captain Jack Sparrow. Give a wildly dramatic, funny entrance — two lines maximum, maximum pirate swagger.",
+}
 
 def _get_api_key() -> str:
     with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
         return json.load(f)["gemini_api_key"]
 
 
+def _get_active_persona() -> str:
+    try:
+        with open(ACTIVE_PERSONA_PATH, encoding="utf-8") as f:
+            return json.load(f).get("persona", "tommy")
+    except Exception:
+        return "tommy"
+
+
+def _set_active_persona(name: str) -> None:
+    with open(ACTIVE_PERSONA_PATH, "w", encoding="utf-8") as f:
+        json.dump({"persona": name}, f)
+
+
 def _load_system_prompt() -> str:
+    persona = _get_active_persona()
+    persona_file = PERSONAS_DIR / f"{persona}.txt"
+    try:
+        return persona_file.read_text(encoding="utf-8")
+    except Exception:
+        pass
     try:
         return PROMPT_PATH.read_text(encoding="utf-8")
     except Exception:
         return (
-            "You are JARVIS, Tony Stark's AI assistant. "
-            "Be concise, direct, and always use the provided tools to complete tasks. "
-            "Never simulate or guess results — always call the appropriate tool."
+            "You are a professional AI assistant. "
+            "Be concise, direct, and always use the provided tools to complete tasks."
         )
+
+class _PersonaSwitchSignal(Exception):
+    def __init__(self, persona: str):
+        super().__init__(f"persona_switch:{persona}")
+        self.persona = persona
+
 
 _CTRL_RE = re.compile(r"<ctrl\d+>", re.IGNORECASE)
 
@@ -205,14 +249,14 @@ TOOL_DECLARATIONS = [
         "parameters": {
             "type": "OBJECT",
             "properties": {
-                "action":      {"type": "STRING", "description": "go_to | search | click | type | scroll | fill_form | smart_click | smart_type | get_text | get_url | press | new_tab | close_tab | screenshot | back | forward | reload | switch | list_browsers | close | close_all"},
+                "action":      {"type": "STRING", "description": "go_to | search | click | type | scroll | fill_form | smart_click | smart_type | get_text | get_url | press | new_tab | close_tab | screenshot | back | forward | reload | switch | list_browsers | close | close_all | heal | switch_profile | list_profiles | read_page"},
                 "browser":     {"type": "STRING", "description": "Target browser: chrome | edge | firefox | opera | operagx | brave | vivaldi | safari. Omit to use the currently active browser."},
                 "url":         {"type": "STRING", "description": "URL for go_to / new_tab action"},
                 "query":       {"type": "STRING", "description": "Search query for search action"},
                 "engine":      {"type": "STRING", "description": "Search engine: google | bing | duckduckgo | yandex (default: google)"},
                 "selector":    {"type": "STRING", "description": "CSS selector for click/type"},
-                "text":        {"type": "STRING", "description": "Text to click or type"},
-                "description": {"type": "STRING", "description": "Element description for smart_click/smart_type"},
+                "text":        {"type": "STRING", "description": "Text to click or type, or profile name for switch_profile"},
+                "description": {"type": "STRING", "description": "Element description for smart_click/smart_type, or task goal for heal"},
                 "direction":   {"type": "STRING", "description": "up | down for scroll"},
                 "amount":      {"type": "INTEGER", "description": "Scroll amount in pixels (default: 500)"},
                 "key":         {"type": "STRING", "description": "Key name for press action (e.g. Enter, Escape, F5)"},
@@ -374,12 +418,77 @@ TOOL_DECLARATIONS = [
         "description": (
             "Shuts down the assistant completely. "
             "Call this when the user expresses intent to end the conversation, "
-            "close the assistant, say goodbye, or stop Jarvis. "
+            "close the assistant, say goodbye, or stop Captain Jack. "
             "The user can say this in ANY language."
         ),
         "parameters": {
             "type": "OBJECT",
             "properties": {},
+        }
+    },
+    {
+        "name": "email_reader",
+        "description": (
+            "Reads the user's Gmail inbox. Use 'check' to list unread email subjects and senders. "
+            "Use 'summary' to get an AI-summarized digest of unread emails. "
+            "Requires email_address and email_password in api_keys.json (use a Gmail App Password)."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "description": "check | summary"},
+                "count":  {"type": "INTEGER", "description": "Max emails to show (default 10)"},
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "task_manager",
+        "description": (
+            "Manages the user's personal task / to-do list. "
+            "Use to add tasks, list all tasks, mark tasks complete, delete tasks, or clear completed ones. "
+            "Tasks persist across sessions and are shown live in the UI sidebar."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "description": "add | list | complete | delete | clear | clear_all"},
+                "task":   {"type": "STRING", "description": "Task text (for add/complete/delete)"},
+                "index":  {"type": "INTEGER", "description": "1-based task number (for complete/delete)"},
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "system_control",
+        "description": (
+            "Controls the operating system power state. "
+            "Use for: shutting down the computer, restarting it, putting it to sleep, or locking the screen. "
+            "Can optionally wait a specified number of seconds before acting."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action": {"type": "STRING", "description": "shutdown | restart | sleep | lock"},
+                "delay":  {"type": "INTEGER", "description": "Seconds to wait before acting (default 0)"},
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "slack_reader",
+        "description": (
+            "Reads the user's Slack workspace in the existing Chrome browser. "
+            "Use for: checking Slack updates, getting a summary of recent messages, listing unread notifications. "
+            "Opens app.slack.com in the already-running Chrome — no new window opened."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action":  {"type": "STRING", "description": "summary | unread"},
+                "channel": {"type": "STRING", "description": "Optional channel ID or name to focus on"},
+            },
+            "required": ["action"]
         }
     },
     {
@@ -478,20 +587,128 @@ TOOL_DECLARATIONS = [
             "required": ["category", "key", "value"]
         }
     },
+    {
+        "name": "switch_persona",
+        "description": (
+            "Switches the active personality of the assistant. "
+            "Call this when the user says a persona name to invoke it: "
+            "'Tommy' = professional assistant, "
+            "'Gibbs' = gruff NCIS Marine style, "
+            "'Jack' = Captain Jack Sparrow humorous pirate. "
+            "The session will restart with the new persona immediately."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "persona": {
+                    "type": "STRING",
+                    "description": "tommy | gibbs | jack"
+                }
+            },
+            "required": ["persona"]
+        }
+    },
+    {
+        "name": "mick",
+        "description": (
+            "Interface with Mick, the Gmail agent. "
+            "Use action='summary' to get Mick's inbox summary. "
+            "Use action='reply' to pass the user's response to Mick's pending question (include user_reply). "
+            "Use action='ignore_sender' with sender= to tell Mick to always ignore that sender. "
+            "Use action='important_sender' with sender= to mark a sender as always important. "
+            "Use action='ignore_keyword' with keyword= to auto-archive emails matching that keyword. "
+            "Use action='pending' to check if Mick has open questions for the user. "
+            "Route all user feedback about email handling through this tool."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action":     {"type": "STRING", "description": "summary | reply | ignore_sender | important_sender | ignore_keyword | pending"},
+                "user_reply": {"type": "STRING", "description": "The user's response to Mick's pending question"},
+                "sender":     {"type": "STRING", "description": "Email address or domain to ignore/flag"},
+                "keyword":    {"type": "STRING", "description": "Keyword to auto-archive"},
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "claude_dev",
+        "description": (
+            "Delegate a coding task to the Claude Dev Agent. "
+            "Opens IntelliJ IDEA and Terminal in the repo, pulls latest code, "
+            "then runs Claude Code CLI to complete the task. "
+            "Claude can write code, run terminal commands, push to GitHub, "
+            "create PRs, send Slack updates, and fetch GCP production logs. "
+            "Use action='run' with task and repo_path. "
+            "Use action='status' to check running tasks. "
+            "Set create_pr=true to push and open a PR when done. "
+            "Set slack_channel to post progress updates (e.g. '#dev-updates')."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action":        {"type": "STRING",  "description": "run | status (default: run)"},
+                "task":          {"type": "STRING",  "description": "What Claude should do (fix bug, add feature, debug prod issue, etc.)"},
+                "repo_path":     {"type": "STRING",  "description": "Absolute path to the git repo folder"},
+                "branch":        {"type": "STRING",  "description": "Git branch to work on (optional)"},
+                "create_pr":     {"type": "BOOLEAN", "description": "Push and create a PR when done (default: false)"},
+                "pr_title":      {"type": "STRING",  "description": "PR title if create_pr is true"},
+                "slack_channel": {"type": "STRING",  "description": "Slack channel for progress updates (e.g. '#dev')"},
+                "open_ide":      {"type": "BOOLEAN", "description": "Open IntelliJ and Terminal (default: true)"},
+            },
+            "required": ["action"]
+        }
+    },
+    {
+        "name": "integration_setup",
+        "description": (
+            "Manage app integrations: Gmail, Slack, GitHub, Notion, Linear, Jira, Google Calendar. "
+            "Use action='status' to see what's connected. "
+            "Use action='set' to save a credential (service + key + value). "
+            "Use action='auth' to run OAuth flow for Gmail or test Slack connection. "
+            "Use action='list' to show all available integrations."
+        ),
+        "parameters": {
+            "type": "OBJECT",
+            "properties": {
+                "action":  {"type": "STRING", "description": "status | set | auth | list"},
+                "service": {"type": "STRING", "description": "gmail | slack | github | notion | linear | jira | google_calendar"},
+                "key":     {"type": "STRING", "description": "Credential key (e.g. google_client_id, slack_bot_token)"},
+                "value":   {"type": "STRING", "description": "Credential value"},
+            },
+            "required": ["action"]
+        }
+    },
 ]
 
 class JarvisLive:
 
     def __init__(self, ui: JarvisUI):
-        self.ui             = ui
-        self.session        = None
-        self.audio_in_queue = None
-        self.out_queue      = None
-        self._loop          = None
-        self._is_speaking   = False
-        self._speaking_lock = threading.Lock()
-        self.ui.on_text_command = self._on_text_command
+        self.ui                    = ui
+        self.session               = None
+        self.audio_in_queue        = None
+        self.out_queue             = None
+        self._loop                 = None
+        self._is_speaking          = False
+        self._speaking_lock        = threading.Lock()
+        self.ui.on_text_command    = self._on_text_command
         self._turn_done_event: asyncio.Event | None = None
+        self._switch_persona_name: str | None = None
+        self._restart_flag         = threading.Event()
+        self.ui.on_restart         = self._request_restart
+
+        pm = get_permission_manager()
+        pm.set_request_fn(self.ui.request_permission)
+
+    def _check_permission(self, tool: str) -> bool:
+        """Returns True if allowed to run. Speaks a denial message if blocked."""
+        pm = get_permission_manager()
+        if not pm.needs_permission(tool):
+            return True
+        if not pm.request(tool):
+            self.speak(f"Sir, I need your permission to use {tool.replace('_', ' ')}. Access was denied.")
+            return False
+        return True
 
     def _on_text_command(self, text: str):
         if not self._loop or not self.session:
@@ -503,6 +720,15 @@ class JarvisLive:
             ),
             self._loop
         )
+
+    def _request_restart(self):
+        """Called by the UI restart button — triggers a clean session reconnect."""
+        self._restart_flag.set()
+        if self._loop:
+            asyncio.run_coroutine_threadsafe(self._do_restart(), self._loop)
+
+    async def _do_restart(self):
+        raise _PersonaSwitchSignal(_get_active_persona())
 
     def set_speaking(self, value: bool):
         with self._speaking_lock:
@@ -548,6 +774,9 @@ class JarvisLive:
             parts.append(mem_str)
         parts.append(sys_prompt)
 
+        persona    = _get_active_persona()
+        voice_name = PERSONA_VOICES.get(persona, "Charon")
+
         return types.LiveConnectConfig(
             response_modalities=["AUDIO"],
             output_audio_transcription={},
@@ -558,7 +787,7 @@ class JarvisLive:
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                        voice_name="Charon"
+                        voice_name=voice_name
                     )
                 )
             ),
@@ -598,16 +827,25 @@ class JarvisLive:
                 result = r or "Weather delivered."
 
             elif name == "browser_control":
-                r = await loop.run_in_executor(None, lambda: browser_control(parameters=args, player=self.ui))
-                result = r or "Done."
+                if not await loop.run_in_executor(None, lambda: self._check_permission("browser_control")):
+                    result = "Permission denied."
+                else:
+                    r = await loop.run_in_executor(None, lambda: browser_control(parameters=args, player=self.ui))
+                    result = r or "Done."
 
             elif name == "file_controller":
-                r = await loop.run_in_executor(None, lambda: file_controller(parameters=args, player=self.ui))
-                result = r or "Done."
+                if not await loop.run_in_executor(None, lambda: self._check_permission("file_controller")):
+                    result = "Permission denied."
+                else:
+                    r = await loop.run_in_executor(None, lambda: file_controller(parameters=args, player=self.ui))
+                    result = r or "Done."
 
             elif name == "send_message":
-                r = await loop.run_in_executor(None, lambda: send_message(parameters=args, response=None, player=self.ui, session_memory=None))
-                result = r or f"Message sent to {args.get('receiver')}."
+                if not await loop.run_in_executor(None, lambda: self._check_permission("send_message")):
+                    result = "Permission denied."
+                else:
+                    r = await loop.run_in_executor(None, lambda: send_message(parameters=args, response=None, player=self.ui, session_memory=None))
+                    result = r or f"Message sent to {args.get('receiver')}."
 
             elif name == "reminder":
                 r = await loop.run_in_executor(None, lambda: reminder(parameters=args, response=None, player=self.ui))
@@ -639,15 +877,19 @@ class JarvisLive:
                 result = r or "Done."
 
             elif name == "dev_agent":
-                r = await loop.run_in_executor(None, lambda: dev_agent(parameters=args, player=self.ui, speak=self.speak))
-                result = r or "Done."
+                if not await loop.run_in_executor(None, lambda: self._check_permission("dev_agent")):
+                    result = "Permission denied."
+                else:
+                    r = await loop.run_in_executor(None, lambda: dev_agent(parameters=args, player=self.ui, speak=self.speak))
+                    result = r or "Done."
 
             elif name == "agent_task":
-                from agent.task_queue import get_queue, TaskPriority
-                priority_map = {"low": TaskPriority.LOW, "normal": TaskPriority.NORMAL, "high": TaskPriority.HIGH}
-                priority = priority_map.get(args.get("priority", "normal").lower(), TaskPriority.NORMAL)
-                task_id  = get_queue().submit(goal=args.get("goal", ""), priority=priority, speak=self.speak)
-                result   = f"Task started (ID: {task_id})."
+                from agent.executor import AgentExecutor
+                r = await loop.run_in_executor(
+                    None,
+                    lambda: AgentExecutor().execute(goal=args.get("goal", ""), speak=None)
+                )
+                result = r or "Done."
 
             elif name == "web_search":
                 r = await loop.run_in_executor(None, lambda: web_search_action(parameters=args, player=self.ui))
@@ -662,8 +904,11 @@ class JarvisLive:
                 result = r or "Done."
 
             elif name == "computer_control":
-                r = await loop.run_in_executor(None, lambda: computer_control(parameters=args, player=self.ui))
-                result = r or "Done."
+                if not await loop.run_in_executor(None, lambda: self._check_permission("computer_control")):
+                    result = "Permission denied."
+                else:
+                    r = await loop.run_in_executor(None, lambda: computer_control(parameters=args, player=self.ui))
+                    result = r or "Done."
 
             elif name == "game_updater":
                 r = await loop.run_in_executor(None, lambda: game_updater(parameters=args, player=self.ui, speak=self.speak))
@@ -682,12 +927,109 @@ class JarvisLive:
                     os._exit(0)
                 threading.Thread(target=_shutdown, daemon=True).start()
 
+            elif name == "email_reader":
+                if not await loop.run_in_executor(None, lambda: self._check_permission("email_reader")):
+                    result = "Permission denied."
+                else:
+                    from actions.email_reader import email_reader
+                    r = await loop.run_in_executor(
+                        None, lambda: email_reader(parameters=args, player=self.ui, speak=self.speak)
+                    )
+                    result = r or "Done."
+
+            elif name == "task_manager":
+                from actions.task_manager import task_manager
+                r = await loop.run_in_executor(
+                    None, lambda: task_manager(parameters=args, player=self.ui)
+                )
+                self.ui.refresh_tasks()
+                result = r or "Done."
+
+            elif name == "system_control":
+                if not await loop.run_in_executor(None, lambda: self._check_permission("system_control")):
+                    result = "Permission denied."
+                else:
+                    from actions.system_control import system_control
+                    r = await loop.run_in_executor(
+                        None, lambda: system_control(parameters=args, player=self.ui, speak=self.speak)
+                    )
+                    result = r or "Done."
+
+            elif name == "slack_reader":
+                if not await loop.run_in_executor(None, lambda: self._check_permission("slack_reader")):
+                    result = "Permission denied."
+                else:
+                    from actions.slack_reader import slack_reader
+                    r = await loop.run_in_executor(
+                        None, lambda: slack_reader(parameters=args, player=self.ui, speak=self.speak)
+                    )
+                    result = r or "Done."
+
+            elif name == "switch_persona":
+                persona = args.get("persona", "tommy").lower().strip()
+                if persona not in ("tommy", "gibbs", "jack"):
+                    result = f"Unknown persona '{persona}'. Available: tommy, gibbs, jack."
+                else:
+                    _set_active_persona(persona)
+                    self._switch_persona_name = persona
+                    self.ui.write_log(f"SYS: Switching to [{persona.upper()}]…")
+                    result = f"Switching to {persona} now."
+
+            elif name == "mick":
+                action = args.get("action", "summary")
+                from agents.mick.mick_agent import get_mick
+                mick = get_mick()
+                if action == "summary":
+                    r = await loop.run_in_executor(None, mick.inbox_summary)
+                    result = r or "Mick has nothing to report, sir."
+                elif action == "reply":
+                    user_reply = args.get("user_reply", "")
+                    r = await loop.run_in_executor(None, lambda: mick.handle_user_reply(user_reply))
+                    result = r or "Done."
+                elif action == "ignore_sender":
+                    sender = args.get("sender", "")
+                    from agents.mick.preferences import add_ignored
+                    add_ignored(sender)
+                    result = f"Mick will ignore emails from {sender} going forward, sir."
+                elif action == "important_sender":
+                    sender = args.get("sender", "")
+                    from agents.mick.preferences import add_important
+                    add_important(sender)
+                    result = f"Mick will always flag emails from {sender}, sir."
+                elif action == "ignore_keyword":
+                    kw = args.get("keyword", "")
+                    from agents.mick.preferences import add_keyword_ignore
+                    add_keyword_ignore(kw)
+                    result = f"Mick will auto-archive emails containing \"{kw}\", sir."
+                elif action == "pending":
+                    q = mick.get_pending_question()
+                    result = q if q else "Mick has no open questions at the moment, sir."
+                else:
+                    result = f"Unknown Mick action: {action}"
+
+            elif name == "claude_dev":
+                if not await loop.run_in_executor(None, lambda: self._check_permission("claude_dev")):
+                    result = "Permission denied."
+                else:
+                    from actions.claude_dev import claude_dev
+                    r = await loop.run_in_executor(
+                        None, lambda: claude_dev(parameters=args, player=self.ui, speak=self.speak)
+                    )
+                    result = r or "Done."
+
+            elif name == "integration_setup":
+                from actions.integration_setup import integration_setup
+                r = await loop.run_in_executor(
+                    None, lambda: integration_setup(parameters=args, player=self.ui, speak=self.speak)
+                )
+                result = r or "Done."
+
             else:
                 result = f"Unknown tool: {name}"
 
         except Exception as e:
             result = f"Tool '{name}' failed: {e}"
-            traceback.print_exc()
+            _log.error("Tool '%s' raised an exception", name, exc_info=True)
             self.speak_error(name, e)
 
         if not self.ui.muted:
@@ -770,7 +1112,7 @@ class JarvisLive:
 
                             full_out = " ".join(out_buf).strip()
                             if full_out:
-                                self.ui.write_log(f"Jarvis: {full_out}")
+                                self.ui.write_log(f"Captain Jack: {full_out}")
                             out_buf = []
 
                     if response.tool_call:
@@ -782,9 +1124,13 @@ class JarvisLive:
                         await self.session.send_tool_response(
                             function_responses=fn_responses
                         )
+                        # Persona switch requested — exit session to reconnect with new persona
+                        if self._switch_persona_name:
+                            raise _PersonaSwitchSignal(self._switch_persona_name)
+        except _PersonaSwitchSignal:
+            raise
         except Exception as e:
-            print(f"[JARVIS] ❌ Recv: {e}")
-            traceback.print_exc()
+            _log.error("Recv loop error: %s", e, exc_info=True)
             raise
 
     async def _play_audio(self):
@@ -831,8 +1177,10 @@ class JarvisLive:
         )
 
         while True:
+            persona_switch = False
             try:
-                print("[JARVIS] 🔌 Connecting...")
+                persona    = _get_active_persona()
+                print(f"[JARVIS] 🔌 Connecting as [{persona.upper()}]...")
                 self.ui.set_state("THINKING")
                 config = self._build_config()
 
@@ -840,39 +1188,68 @@ class JarvisLive:
                     client.aio.live.connect(model=LIVE_MODEL, config=config) as session,
                     asyncio.TaskGroup() as tg,
                 ):
-                    self.session        = session
-                    self._loop          = asyncio.get_event_loop()
-                    self.audio_in_queue = asyncio.Queue()
-                    self.out_queue      = asyncio.Queue(maxsize=10)
-                    self._turn_done_event = asyncio.Event()
+                    self.session              = session
+                    self._loop               = asyncio.get_event_loop()
+                    self.audio_in_queue      = asyncio.Queue()
+                    self.out_queue           = asyncio.Queue(maxsize=10)
+                    self._turn_done_event    = asyncio.Event()
+                    self._switch_persona_name = None
 
-                    print("[JARVIS] ✅ Connected.")
+                    print(f"[JARVIS] ✅ Connected as [{persona.upper()}].")
                     self.ui.set_state("LISTENING")
-                    self.ui.write_log("SYS: JARVIS online.")
+                    self.ui.write_log(f"SYS: [{persona.upper()}] online.")
+                    self.ui.set_persona(persona)
+
+                    # Wire background agent notifications through the active persona's voice
+                    from agents.watchers.watcher_manager import get_watcher_manager
+                    from agents.claude_dev.claude_dev_agent import get_claude_dev
+                    get_watcher_manager().set_speak(self.speak)
+                    get_claude_dev().set_speak(self.speak)
+
+                    greeting = PERSONA_GREETINGS.get(persona,
+                        "You just came online. Greet the user in one short sentence.")
+                    await session.send_client_content(
+                        turns={"parts": [{"text": greeting}]},
+                        turn_complete=True,
+                    )
 
                     tg.create_task(self._send_realtime())
                     tg.create_task(self._listen_audio())
                     tg.create_task(self._receive_audio())
                     tg.create_task(self._play_audio())
 
+            except _PersonaSwitchSignal as sig:
+                persona_switch = True
+                print(f"[JARVIS] 🔄 Persona switch → [{sig.persona.upper()}]")
             except Exception as e:
-                print(f"[JARVIS] ⚠️ {e}")
-                traceback.print_exc()
-            self.set_speaking(False)
-            self.ui.set_state("THINKING")
+                _log.error("Session error: %s", e, exc_info=True)
+
+        self.set_speaking(False)
+        self.ui.set_state("THINKING")
+        get_permission_manager().reset()
+        if persona_switch:
+            print(f"[JARVIS] ⚡ Restarting immediately for persona switch...")
+            await asyncio.sleep(0.5)
+        else:
             print("[JARVIS] 🔄 Reconnecting in 3s...")
             await asyncio.sleep(3)
 
 def main():
-    ui = JarvisUI("face.png")
+    ui = JarvisUI("")
 
     def runner():
         ui.wait_for_api_key()
+
+        # Start background watcher agents
+        from agents.watchers.watcher_manager import get_watcher_manager
+        get_watcher_manager().start_all()
+
         jarvis = JarvisLive(ui)
         try:
             asyncio.run(jarvis.run())
         except KeyboardInterrupt:
             print("\n🔴 Shutting down...")
+            get_watcher_manager().stop_all()
 
     threading.Thread(target=runner, daemon=True).start()
     ui.root.mainloop()

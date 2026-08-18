@@ -80,7 +80,10 @@ class _SysMetrics:
         self.gpu  = -1.0  
         self.tmp  = -1.0  
         self._lock = threading.Lock()
-        self._last_net = psutil.net_io_counters()
+        try:
+            self._last_net = psutil.net_io_counters()
+        except Exception:
+            self._last_net = None
         self._last_net_t = time.time()
         self._running = True
         t = threading.Thread(target=self._loop, daemon=True)
@@ -98,13 +101,19 @@ class _SysMetrics:
         cpu = psutil.cpu_percent(interval=None)
         mem = psutil.virtual_memory().percent
 
-        nc  = psutil.net_io_counters()
+        try:
+            nc  = psutil.net_io_counters()
+        except Exception:
+            nc = None
         now = time.time()
-        dt  = now - self._last_net_t
-        if dt > 0:
-            sent = (nc.bytes_sent - self._last_net.bytes_sent) / dt
-            recv = (nc.bytes_recv - self._last_net.bytes_recv) / dt
-            net  = (sent + recv) / (1024 * 1024)
+        if nc and self._last_net:
+            dt  = now - self._last_net_t
+            if dt > 0:
+                sent = (nc.bytes_sent - self._last_net.bytes_sent) / dt
+                recv = (nc.bytes_recv - self._last_net.bytes_recv) / dt
+                net  = (sent + recv) / (1024 * 1024)
+            else:
+                net = 0.0
         else:
             net = 0.0
         self._last_net   = nc
@@ -452,8 +461,8 @@ class HudCanvas(QWidget):
                 p.drawEllipse(QRectF(cx - r2, cy - r2, r2 * 2, r2 * 2))
             p.setPen(QPen(qcol(C.PRI, min(255, int(self._halo * 2))), 1))
             p.setFont(QFont("Courier New", 13, QFont.Weight.Bold))
-            p.drawText(QRectF(cx - 80, cy - 14, 160, 28),
-                       Qt.AlignmentFlag.AlignCenter, "J.A.R.V.I.S")
+            p.drawText(QRectF(cx - 100, cy - 14, 200, 28),
+                       Qt.AlignmentFlag.AlignCenter, "CAPTAIN JACK")
 
         # particles
         for pt in self._particles:
@@ -607,7 +616,7 @@ class LogWidget(QTextEdit):
         self._pos    = 0
         tl = self._text.lower()
         if   tl.startswith("you:"):    self._tag = "you"
-        elif tl.startswith("jarvis:"): self._tag = "ai"
+        elif tl.startswith("captain jack:"): self._tag = "ai"
         elif tl.startswith("file:"):   self._tag = "file"
         elif "err" in tl:              self._tag = "err"
         else:                          self._tag = "sys"
@@ -733,7 +742,7 @@ class FileDropZone(QWidget):
 
     def _browse(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Select a file for JARVIS", str(Path.home()),
+            self, "Select a file for CAPTAIN JACK", str(Path.home()),
             "All Files (*.*);;"
             "Images (*.jpg *.jpeg *.png *.gif *.webp *.bmp *.svg);;"
             "Documents (*.pdf *.docx *.txt *.md *.pptx);;"
@@ -984,13 +993,105 @@ class SetupOverlay(QWidget):
         self.done.emit(key, self._sel_os)
 
 
+class PermissionOverlay(QWidget):
+    """Overlay that asks the user to allow or deny a tool permission."""
+
+    result = pyqtSignal(bool)
+
+    def __init__(self, display_name: str, description: str, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(f"""
+            PermissionOverlay {{
+                background: rgba(0, 6, 10, 250);
+                border: 1px solid {C.ACC};
+                border-radius: 6px;
+            }}
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(28, 22, 28, 22)
+        layout.setSpacing(10)
+
+        def _lbl(txt, size=9, bold=False, color=C.PRI,
+                 align=Qt.AlignmentFlag.AlignCenter):
+            w = QLabel(txt)
+            w.setAlignment(align)
+            w.setWordWrap(True)
+            w.setFont(QFont("Courier New", size,
+                            QFont.Weight.Bold if bold else QFont.Weight.Normal))
+            w.setStyleSheet(f"color: {color}; background: transparent;")
+            return w
+
+        layout.addWidget(_lbl("⚠  PERMISSION REQUIRED", 12, True, C.ACC))
+        layout.addSpacing(2)
+
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"color: {C.ACC};")
+        layout.addWidget(sep)
+        layout.addSpacing(4)
+
+        layout.addWidget(_lbl(display_name.upper(), 10, True, C.WHITE))
+        layout.addWidget(_lbl(description, 9, color=C.TEXT_MED))
+        layout.addSpacing(8)
+
+        layout.addWidget(_lbl(
+            "Allow Captain Jack to perform this action?\n"
+            "Permission will be remembered for this session.",
+            8, color=C.TEXT_DIM
+        ))
+        layout.addSpacing(10)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(10)
+
+        deny_btn = QPushButton("✕  DENY")
+        deny_btn.setFixedHeight(34)
+        deny_btn.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
+        deny_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        deny_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: #160005; color: {C.RED};
+                border: 1px solid {C.RED}; border-radius: 3px;
+            }}
+            QPushButton:hover {{
+                background: #280008; border-color: #ff6677; color: #ff6677;
+            }}
+            QPushButton:pressed {{ background: {C.RED}; color: #000; }}
+        """)
+        deny_btn.clicked.connect(lambda: self.result.emit(False))
+        btn_row.addWidget(deny_btn)
+
+        allow_btn = QPushButton("✓  ALLOW")
+        allow_btn.setFixedHeight(34)
+        allow_btn.setFont(QFont("Courier New", 9, QFont.Weight.Bold))
+        allow_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        allow_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent; color: {C.GREEN};
+                border: 1px solid {C.GREEN_D}; border-radius: 3px;
+            }}
+            QPushButton:hover {{
+                background: #001a0d; border-color: {C.GREEN}; color: {C.GREEN};
+            }}
+            QPushButton:pressed {{ background: {C.GREEN}; color: #000; }}
+        """)
+        allow_btn.clicked.connect(lambda: self.result.emit(True))
+        btn_row.addWidget(allow_btn)
+
+        layout.addLayout(btn_row)
+
+
 class MainWindow(QMainWindow):
-    _log_sig   = pyqtSignal(str)
-    _state_sig = pyqtSignal(str)
+    _log_sig          = pyqtSignal(str)
+    _state_sig        = pyqtSignal(str)
+    _task_refresh_sig = pyqtSignal()
+    _perm_sig         = pyqtSignal(str, str, str)
 
     def __init__(self, face_path: str):
         super().__init__()
-        self.setWindowTitle("J.A.R.V.I.S — MARK XXXIX")
+        self.setWindowTitle("CAPTAIN JACK")
         self.setMinimumSize(_MIN_W, _MIN_H)
         self.resize(_DEFAULT_W, _DEFAULT_H)
 
@@ -1001,6 +1102,8 @@ class MainWindow(QMainWindow):
         )
 
         self.on_text_command  = None
+        self.on_stop          = None
+        self.on_restart       = None
         self._muted           = False
         self._current_file: str | None = None
 
@@ -1043,8 +1146,18 @@ class MainWindow(QMainWindow):
 
         self._log_sig.connect(self._log.append_log)
         self._state_sig.connect(self._apply_state)
+        self._task_refresh_sig.connect(self._refresh_tasks)
+        self._perm_sig.connect(self._show_permission_overlay)
+
+        self._task_tmr = QTimer(self)
+        self._task_tmr.timeout.connect(self._refresh_tasks)
+        self._task_tmr.start(4000)
+        self._refresh_tasks()
 
         self._overlay: SetupOverlay | None = None
+        self._perm_overlay: PermissionOverlay | None = None
+        self._perm_event:  threading.Event = threading.Event()
+        self._perm_result: bool = False
         self._ready = self._check_config()
         if not self._ready:
             self._show_setup()
@@ -1053,6 +1166,31 @@ class MainWindow(QMainWindow):
         sc_mute.activated.connect(self._toggle_mute)
         sc_full = QShortcut(QKeySequence("F11"), self)
         sc_full.activated.connect(self._toggle_fullscreen)
+
+    def _show_permission_overlay(self, tool: str, display_name: str, description: str):
+        cw  = self.centralWidget()
+        ow, oh = 420, 280
+        ov = PermissionOverlay(display_name, description, cw)
+        ov.setGeometry(
+            (cw.width()  - ow) // 2,
+            (cw.height() - oh) // 2,
+            ow, oh,
+        )
+        ov.result.connect(self._on_perm_result)
+        ov.show()
+        ov.raise_()
+        self._perm_overlay = ov
+        self._log.append_log(f"AUTH: Permission requested — {display_name}")
+
+    def _on_perm_result(self, allowed: bool):
+        self._perm_result = allowed
+        if self._perm_overlay:
+            self._perm_overlay.hide()
+            self._perm_overlay.deleteLater()
+            self._perm_overlay = None
+        verdict = "GRANTED" if allowed else "DENIED"
+        self._log.append_log(f"AUTH: Permission {verdict}")
+        self._perm_event.set()
 
     def _toggle_fullscreen(self):
         if self.isFullScreen():
@@ -1135,20 +1273,20 @@ class MainWindow(QMainWindow):
             l.setStyleSheet(f"color: {color}; background: transparent;")
             return l
 
-        lay.addWidget(_badge("MARK XXXIX", C.PRI_DIM))
+        lay.addWidget(_badge("🏴‍☠️  v1.0", C.PRI_DIM))
         lay.addStretch()
 
         mid = QVBoxLayout(); mid.setSpacing(1)
-        title = QLabel("J.A.R.V.I.S")
+        title = QLabel("CAPTAIN JACK")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title.setFont(QFont("Courier New", 17, QFont.Weight.Bold))
         title.setStyleSheet(f"color: {C.PRI}; background: transparent;")
         mid.addWidget(title)
-        sub = QLabel("Just A Rather Very Intelligent System")
-        sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        sub.setFont(QFont("Courier New", 7))
-        sub.setStyleSheet(f"color: {C.PRI_DIM}; background: transparent;")
-        mid.addWidget(sub)
+        self._persona_sub = QLabel('say  "Tommy" · "Gibbs" · "Jack"  to switch')
+        self._persona_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._persona_sub.setFont(QFont("Courier New", 7))
+        self._persona_sub.setStyleSheet(f"color: {C.PRI_DIM}; background: transparent;")
+        mid.addWidget(self._persona_sub)
         lay.addLayout(mid)
         lay.addStretch()
 
@@ -1222,21 +1360,57 @@ class MainWindow(QMainWindow):
         ip_lay.addWidget(os_lbl)
 
         lay.addWidget(info_panel)
-        lay.addStretch()
 
-        for txt, col in [
-            ("AI CORE\nACTIVE",     C.GREEN),
-            ("SEC\nCLEARED",        C.PRI),
-            ("PROTOCOL\nXXXVIII",   C.TEXT_DIM),
-        ]:
-            lbl = QLabel(txt)
-            lbl.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
-            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl.setStyleSheet(
-                f"color: {col}; background: {C.PANEL2};"
-                f"border: 1px solid {C.BORDER_A}; border-radius: 3px; padding: 4px;"
-            )
-            lay.addWidget(lbl)
+        # ── Tasks panel ──────────────────────────────────────────────
+        sep_t = QFrame(); sep_t.setFrameShape(QFrame.Shape.HLine)
+        sep_t.setStyleSheet(f"color: {C.BORDER}; margin: 4px 0;")
+        lay.addWidget(sep_t)
+
+        self._tasks_hdr = QLabel("◈ TASKS")
+        self._tasks_hdr.setFont(QFont("Courier New", 7, QFont.Weight.Bold))
+        self._tasks_hdr.setStyleSheet(f"color: {C.PRI}; background: transparent; padding-bottom: 2px;")
+        lay.addWidget(self._tasks_hdr)
+
+        task_box = QWidget()
+        task_box.setStyleSheet(
+            f"background: {C.PANEL2}; border: 1px solid {C.BORDER}; border-radius: 3px;"
+        )
+        task_box_lay = QVBoxLayout(task_box)
+        task_box_lay.setContentsMargins(5, 4, 5, 4)
+        task_box_lay.setSpacing(2)
+
+        self._task_labels: list[QLabel] = []
+        for _ in range(6):
+            lbl = QLabel("")
+            lbl.setFont(QFont("Courier New", 7))
+            lbl.setWordWrap(True)
+            lbl.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent; border: none;")
+            lbl.hide()
+            task_box_lay.addWidget(lbl)
+            self._task_labels.append(lbl)
+
+        self._tasks_empty_lbl = QLabel("no tasks yet")
+        self._tasks_empty_lbl.setFont(QFont("Courier New", 7))
+        self._tasks_empty_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._tasks_empty_lbl.setStyleSheet(f"color: {C.TEXT_DIM}; background: transparent; border: none; padding: 4px 0;")
+        task_box_lay.addWidget(self._tasks_empty_lbl)
+
+        lay.addWidget(task_box)
+
+        self._quick_task = QLineEdit()
+        self._quick_task.setPlaceholderText("+ quick add task")
+        self._quick_task.setFont(QFont("Courier New", 7))
+        self._quick_task.setFixedHeight(22)
+        self._quick_task.setStyleSheet(f"""
+            QLineEdit {{
+                background: {C.PANEL}; color: {C.WHITE};
+                border: 1px solid {C.BORDER}; border-radius: 2px; padding: 2px 4px;
+            }}
+            QLineEdit:focus {{ border: 1px solid {C.PRI}; }}
+        """)
+        self._quick_task.returnPressed.connect(self._quick_add_task)
+        lay.addWidget(self._quick_task)
+        lay.addStretch()
 
         return w
     def _build_right_panel(self) -> QWidget:
@@ -1303,6 +1477,48 @@ class MainWindow(QMainWindow):
         fs_btn.clicked.connect(self._toggle_fullscreen)
         lay.addWidget(fs_btn)
 
+        btn_row = QHBoxLayout(); btn_row.setSpacing(4)
+
+        restart_btn = QPushButton("↺  RESTART")
+        restart_btn.setFixedHeight(30)
+        restart_btn.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        restart_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        restart_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: #001416; color: {C.PRI};
+                border: 1px solid {C.PRI}; border-radius: 3px;
+            }}
+            QPushButton:hover {{
+                background: #002a30; border-color: #00ffee; color: #00ffee;
+            }}
+            QPushButton:pressed {{
+                background: {C.PRI}; color: #000;
+            }}
+        """)
+        restart_btn.clicked.connect(self._restart_jarvis)
+        btn_row.addWidget(restart_btn)
+
+        stop_btn = QPushButton("■  STOP")
+        stop_btn.setFixedHeight(30)
+        stop_btn.setFont(QFont("Courier New", 8, QFont.Weight.Bold))
+        stop_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        stop_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: #160005; color: {C.RED};
+                border: 1px solid {C.RED}; border-radius: 3px;
+            }}
+            QPushButton:hover {{
+                background: #280008; border-color: #ff6677; color: #ff6677;
+            }}
+            QPushButton:pressed {{
+                background: {C.RED}; color: #000;
+            }}
+        """)
+        stop_btn.clicked.connect(self._stop_jarvis)
+        btn_row.addWidget(stop_btn)
+
+        lay.addLayout(btn_row)
+
         return w
 
     def _build_input_row(self) -> QHBoxLayout:
@@ -1349,9 +1565,9 @@ class MainWindow(QMainWindow):
 
         lay.addWidget(_fl("[F4] Mute  ·  [F11] Fullscreen"))
         lay.addStretch()
-        lay.addWidget(_fl("FatihMakes Industries  ·  MARK XXXIX  ·  CLASSIFIED"))
+        lay.addWidget(_fl("Captain Jack Sparrow  ·  Black Pearl AI  ·  CLASSIFIED"))
         lay.addStretch()
-        lay.addWidget(_fl("© FATIHMAKES", C.PRI_DIM))
+        lay.addWidget(_fl("© CAPTAIN JACK", C.PRI_DIM))
         return w
 
     def _on_file_selected(self, path: str):
@@ -1360,7 +1576,7 @@ class MainWindow(QMainWindow):
         cat  = _file_category(p)
         icon, _ = _FILE_ICONS.get(cat, _FILE_ICONS["unknown"])
         size = _fmt_size(p.stat().st_size)
-        self._file_hint.setText(f"{icon}  {p.name}  ·  {size}  ·  Tell JARVIS what to do with it")
+        self._file_hint.setText(f"{icon}  {p.name}  ·  {size}  ·  Tell Jack what to do with it")
         self._log.append_log(f"FILE: {p.name} ({size}) loaded")
         if self.on_text_command:
             msg = (
@@ -1400,6 +1616,72 @@ class MainWindow(QMainWindow):
                 }}
                 QPushButton:hover {{ background: #001f10; }}
             """)
+
+    def _refresh_tasks(self):
+        tasks_path = BASE_DIR / "memory" / "tasks.json"
+        tasks = []
+        if tasks_path.exists():
+            try:
+                tasks = json.loads(tasks_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+        pending = sum(1 for t in tasks if not t.get("done", False))
+        total   = len(tasks)
+        self._tasks_hdr.setText(f"◈ TASKS ({pending})" if total else "◈ TASKS")
+
+        if not tasks:
+            self._tasks_empty_lbl.show()
+            for lbl in self._task_labels:
+                lbl.hide()
+            return
+
+        self._tasks_empty_lbl.hide()
+        for i, lbl in enumerate(self._task_labels):
+            if i < len(tasks):
+                t    = tasks[-(i + 1)]
+                done = t.get("done", False)
+                txt  = t["text"][:18] + ("…" if len(t["text"]) > 18 else "")
+                if done:
+                    lbl.setText(f"✓ {txt}")
+                    lbl.setStyleSheet(
+                        f"color: {C.TEXT_DIM}; background: transparent; "
+                        f"border: none; text-decoration: line-through;"
+                    )
+                else:
+                    lbl.setText(f"○ {txt}")
+                    lbl.setStyleSheet(f"color: {C.TEXT_MED}; background: transparent; border: none;")
+                lbl.show()
+            else:
+                lbl.hide()
+
+    def _quick_add_task(self):
+        text = self._quick_task.text().strip()
+        if not text:
+            return
+        self._quick_task.clear()
+
+        def _add():
+            from actions.task_manager import task_manager
+            task_manager({"action": "add", "task": text})
+            self._task_refresh_sig.emit()
+
+        threading.Thread(target=_add, daemon=True).start()
+
+    def _stop_jarvis(self):
+        if self.on_stop:
+            try:
+                self.on_stop()
+            except Exception:
+                pass
+        QApplication.instance().quit()
+
+    def _restart_jarvis(self):
+        if self.on_restart:
+            try:
+                threading.Thread(target=self.on_restart, daemon=True).start()
+            except Exception:
+                pass
 
     def _send(self):
         txt = self._input.text().strip()
@@ -1445,7 +1727,7 @@ class MainWindow(QMainWindow):
             self._overlay.hide()
             self._overlay = None
         self._apply_state("LISTENING")
-        self._log.append_log(f"SYS: Initialised. OS={os_name.upper()}. JARVIS online.")
+        self._log.append_log(f"SYS: Initialised. OS={os_name.upper()}. Captain Jack online.")
 
 class _RootShim:
     def __init__(self, app: QApplication):
@@ -1494,6 +1776,38 @@ class JarvisUI:
     def wait_for_api_key(self):
         while not self._win._ready:
             time.sleep(0.1)
+
+    @property
+    def on_stop(self):
+        return self._win.on_stop
+
+    @on_stop.setter
+    def on_stop(self, cb):
+        self._win.on_stop = cb
+
+    @property
+    def on_restart(self):
+        return self._win.on_restart
+
+    @on_restart.setter
+    def on_restart(self, cb):
+        self._win.on_restart = cb
+
+    def refresh_tasks(self):
+        self._win._task_refresh_sig.emit()
+
+    def set_persona(self, persona: str):
+        labels = {"tommy": "TOMMY", "gibbs": "GIBBS", "jack": "JACK"}
+        name = labels.get(persona.lower(), persona.upper())
+        self._win._persona_sub.setText(f"active persona:  {name}")
+
+    def request_permission(self, tool: str, display_name: str, description: str) -> bool:
+        """Called from a background thread; shows the permission overlay and blocks until the user responds."""
+        self._win._perm_event.clear()
+        self._win._perm_result = False
+        self._win._perm_sig.emit(tool, display_name, description)
+        self._win._perm_event.wait(timeout=120)
+        return self._win._perm_result
 
     def start_speaking(self):
         self.set_state("SPEAKING")

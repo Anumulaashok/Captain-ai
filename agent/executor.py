@@ -1,15 +1,18 @@
 import json
 import re
 import sys
+import time
 import threading
 import subprocess
 import tempfile
 import os
+from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from pathlib import Path
 from typing import Callable
 
 from agent.planner       import create_plan, replan
 from agent.error_handler import analyze_error, generate_fix, ErrorDecision
+from memory.memory_manager import load_memory, format_memory_for_prompt
 
 
 def get_base_dir() -> Path:
@@ -172,6 +175,10 @@ def _translate_to_goal_language(content: str, goal: str) -> str:
         return content
 
 def _call_tool(tool: str, parameters: dict, speak: Callable | None) -> str:
+    from core.permission_manager import get_permission_manager
+    pm = get_permission_manager()
+    if pm.needs_permission(tool) and not pm.request(tool):
+        raise PermissionError(f"User denied permission for '{tool}'.")
 
     if tool == "open_app":
         from actions.open_app import open_app
@@ -242,6 +249,26 @@ def _call_tool(tool: str, parameters: dict, speak: Callable | None) -> str:
         from actions.flight_finder import flight_finder
         return flight_finder(parameters=parameters, player=None, speak=speak) or "Done."
 
+    elif tool == "email_reader":
+        from actions.email_reader import email_reader
+        return email_reader(parameters=parameters, player=None, speak=speak) or "Done."
+
+    elif tool == "task_manager":
+        from actions.task_manager import task_manager
+        return task_manager(parameters=parameters, player=None) or "Done."
+
+    elif tool == "system_control":
+        from actions.system_control import system_control
+        return system_control(parameters=parameters, player=None, speak=speak) or "Done."
+
+    elif tool == "slack_reader":
+        from actions.slack_reader import slack_reader
+        return slack_reader(parameters=parameters, player=None, speak=speak) or "Done."
+
+    elif tool == "claude_dev":
+        from actions.claude_dev import claude_dev
+        return claude_dev(parameters=parameters, player=None, speak=speak) or "Done."
+
     else:
         print(f"[Executor] ⚠️ Unknown tool '{tool}' — falling back to generated_code")
         return _run_generated_code(f"Accomplish this task: {parameters}", speak=speak)
@@ -249,6 +276,7 @@ def _call_tool(tool: str, parameters: dict, speak: Callable | None) -> str:
 class AgentExecutor:
 
     MAX_REPLAN_ATTEMPTS = 2
+    MAX_PARALLEL_WORKERS = 4
 
     def execute(
         self,
@@ -258,10 +286,12 @@ class AgentExecutor:
     ) -> str:
         print(f"\n[Executor] 🎯 Goal: {goal}")
 
+        memory  = load_memory()
+        context = format_memory_for_prompt(memory)
+        plan    = create_plan(goal, context=context)
+
         replan_attempts = 0
-        completed_steps = []
-        step_results    = {} 
-        plan            = create_plan(goal)
+        completed_steps: list = []
 
         while True:
             steps = plan.get("steps", [])
@@ -271,98 +301,19 @@ class AgentExecutor:
                 if speak: speak(msg)
                 return msg
 
-            success      = True
-            failed_step  = None
-            failed_error = ""
+            outcome = self._execute_parallel(steps, goal, speak, cancel_flag)
 
-            for step in steps:
-                if cancel_flag and cancel_flag.is_set():
-                    if speak: speak("Task cancelled, sir.")
-                    return "Task cancelled."
+            if outcome["cancelled"]:
+                if speak: speak("Task cancelled, sir.")
+                return "Task cancelled."
 
-                step_num = step.get("step", "?")
-                tool     = step.get("tool", "generated_code")
-                desc     = step.get("description", "")
-                params   = step.get("parameters", {})
+            completed_steps = outcome["completed_steps"]
 
-                params = _inject_context(params, tool, step_results, goal=goal)
-
-                print(f"\n[Executor] ▶️ Step {step_num}: [{tool}] {desc}")
-
-                attempt = 1
-                step_ok = False
-
-                while attempt <= 3:
-                    if cancel_flag and cancel_flag.is_set():
-                        break
-                    try:
-                        result = _call_tool(tool, params, speak)
-                        step_results[step_num] = result 
-                        completed_steps.append(step)
-                        print(f"[Executor] ✅ Step {step_num} done: {str(result)[:100]}")
-                        step_ok = True
-                        break
-
-                    except Exception as e:
-                        error_msg = str(e)
-                        print(f"[Executor] ❌ Step {step_num} attempt {attempt} failed: {error_msg}")
-
-                        recovery = analyze_error(step, error_msg, attempt=attempt)
-                        decision = recovery["decision"]
-                        user_msg = recovery.get("user_message", "")
-
-                        if speak and user_msg:
-                            speak(user_msg)
-
-                        if decision == ErrorDecision.RETRY:
-                            attempt += 1
-                            import time; time.sleep(2)
-                            continue
-
-                        elif decision == ErrorDecision.SKIP:
-                            print(f"[Executor] ⏭️ Skipping step {step_num}")
-                            completed_steps.append(step)
-                            step_ok = True
-                            break
-
-                        elif decision == ErrorDecision.ABORT:
-                            msg = f"Task aborted, sir. {recovery.get('reason', '')}"
-                            if speak: speak(msg)
-                            return msg
-
-                        else: 
-                            fix_suggestion = recovery.get("fix_suggestion", "")
-                            if fix_suggestion and tool != "generated_code":
-                                try:
-                                    fixed_step = generate_fix(step, error_msg, fix_suggestion)
-                                    if speak: speak("Trying an alternative approach, sir.")
-                                    res = _call_tool(
-                                        fixed_step["tool"],
-                                        fixed_step["parameters"],
-                                        speak
-                                    )
-                                    step_results[step_num] = res
-                                    completed_steps.append(step)
-                                    step_ok = True
-                                    break
-                                except Exception as fix_err:
-                                    print(f"[Executor] ⚠️ Fix failed: {fix_err}")
-
-                            failed_step  = step
-                            failed_error = error_msg
-                            success      = False
-                            break
-
-                if not step_ok and not failed_step:
-                    failed_step  = step
-                    failed_error = "Max retries exceeded"
-                    success      = False
-
-                if not success:
-                    break
-
-            if success:
+            if outcome["success"]:
                 return self._summarize(goal, completed_steps, speak)
+
+            failed_step  = outcome["failed_step"]
+            failed_error = outcome["failed_error"]
 
             if replan_attempts >= self.MAX_REPLAN_ATTEMPTS:
                 msg = f"Task failed after {replan_attempts} replan attempts, sir."
@@ -370,9 +321,167 @@ class AgentExecutor:
                 return msg
 
             if speak: speak("Adjusting my approach, sir.")
-
             replan_attempts += 1
             plan = replan(goal, completed_steps, failed_step, failed_error)
+
+    # ------------------------------------------------------------------ #
+
+    def _execute_parallel(
+        self,
+        steps_list:  list,
+        goal:        str,
+        speak:       Callable | None,
+        cancel_flag: threading.Event | None,
+    ) -> dict:
+        """
+        Run the plan steps in parallel where dependencies allow.
+        Steps with depends_on:[] start immediately together.
+        A step with depends_on:[1,2] waits until steps 1 and 2 are done.
+        """
+        steps      = {s["step"]: s for s in steps_list}
+        completed  = {}           # step_num -> result str
+        completed_steps = []      # step dicts
+        pending    = set(steps.keys())
+        running    = {}           # future -> step_num
+        results_lock = threading.Lock()
+
+        failed_step  = None
+        failed_error = ""
+
+        with ThreadPoolExecutor(max_workers=self.MAX_PARALLEL_WORKERS,
+                                thread_name_prefix="AgentStep") as pool:
+            while pending or running:
+
+                if cancel_flag and cancel_flag.is_set():
+                    for f in running:
+                        f.cancel()
+                    return {"success": False, "cancelled": True,
+                            "completed_steps": completed_steps,
+                            "failed_step": None, "failed_error": ""}
+
+                # Submit every pending step whose dependencies are satisfied
+                newly_submitted = set()
+                for step_num in sorted(pending):
+                    step = steps[step_num]
+                    deps = step.get("depends_on", [])
+                    if all(d in completed for d in deps):
+                        params = _inject_context(
+                            step["parameters"], step["tool"], completed, goal
+                        )
+                        step_copy = {**step, "parameters": params}
+                        future = pool.submit(
+                            self._run_step, step_copy, speak, cancel_flag
+                        )
+                        running[future] = step_num
+                        newly_submitted.add(step_num)
+                        print(f"[Executor] 🚀 Step {step_num} [{step['tool']}] started"
+                              + (f" (needs {deps})" if deps else " (parallel)"))
+                pending -= newly_submitted
+
+                if not running:
+                    # Deadlock: remaining steps have unresolvable deps
+                    if pending:
+                        print(f"[Executor] ⚠️ Steps {pending} have unresolvable dependencies — skipping")
+                    break
+
+                # Wait for at least one step to finish before re-checking
+                done_futures, _ = wait(list(running.keys()), return_when=FIRST_COMPLETED)
+
+                for f in done_futures:
+                    step_num = running.pop(f)
+                    step     = steps[step_num]
+                    try:
+                        result = f.result()
+                        with results_lock:
+                            completed[step_num] = result
+                            completed_steps.append(step)
+                        print(f"[Executor] ✅ Step {step_num} done: {str(result)[:120]}")
+
+                    except Exception as e:
+                        error_msg = str(e)
+                        print(f"[Executor] ❌ Step {step_num} failed: {error_msg}")
+
+                        if step.get("critical", True):
+                            failed_step  = step
+                            failed_error = error_msg
+                            # Cancel siblings still running
+                            for rf in list(running):
+                                rf.cancel()
+                            running.clear()
+                            pending.clear()
+                            return {
+                                "success": False, "cancelled": False,
+                                "completed_steps": completed_steps,
+                                "failed_step": failed_step,
+                                "failed_error": failed_error,
+                            }
+                        else:
+                            # Non-critical: mark as skipped so dependents can proceed
+                            with results_lock:
+                                completed[step_num] = "(skipped — non-critical failure)"
+                                completed_steps.append(step)
+                            print(f"[Executor] ⏭️ Step {step_num} skipped (non-critical)")
+
+        return {
+            "success": True, "cancelled": False,
+            "completed_steps": completed_steps,
+            "failed_step": None, "failed_error": "",
+        }
+
+    def _run_step(
+        self,
+        step:        dict,
+        speak:       Callable | None,
+        cancel_flag: threading.Event | None,
+    ) -> str:
+        """Run a single step with up to 3 attempts and smart error recovery."""
+        tool     = step["tool"]
+        params   = step["parameters"]
+        step_num = step["step"]
+
+        for attempt in range(1, 4):
+            if cancel_flag and cancel_flag.is_set():
+                raise RuntimeError("Cancelled")
+            try:
+                result = _call_tool(tool, params, speak)
+                return result or "Done."
+
+            except Exception as e:
+                error_msg = str(e)
+                print(f"[Executor] ⚠️  Step {step_num} attempt {attempt} failed: {error_msg[:120]}")
+
+                recovery = analyze_error(step, error_msg, attempt=attempt)
+                decision = recovery["decision"]
+                user_msg = recovery.get("user_message", "")
+
+                if speak and user_msg:
+                    speak(user_msg)
+
+                if decision == ErrorDecision.RETRY and attempt < 3:
+                    time.sleep(2)
+                    continue
+
+                if decision == ErrorDecision.SKIP:
+                    return "(skipped)"
+
+                if decision == ErrorDecision.ABORT:
+                    raise RuntimeError(recovery.get("reason", error_msg))
+
+                # REPLAN or exhausted retries — try a generated fix once
+                fix_suggestion = recovery.get("fix_suggestion", "")
+                if fix_suggestion and tool != "generated_code":
+                    try:
+                        fixed_step = generate_fix(step, error_msg, fix_suggestion)
+                        if speak: speak("Trying an alternative approach, sir.")
+                        return _call_tool(fixed_step["tool"], fixed_step["parameters"], speak) or "Done."
+                    except Exception as fix_err:
+                        print(f"[Executor] ⚠️ Fix attempt failed: {fix_err}")
+
+                raise RuntimeError(error_msg)
+
+        raise RuntimeError("Max retries exceeded")
+
+    # ------------------------------------------------------------------ #
 
     def _summarize(self, goal: str, completed_steps: list, speak: Callable | None) -> str:
         fallback = f"All done, sir. Completed {len(completed_steps)} steps for: {goal[:60]}."

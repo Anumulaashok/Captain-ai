@@ -20,6 +20,416 @@ from playwright.async_api import (
 )
 _OS = platform.system()   # "Windows" | "Darwin" | "Linux"
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# macOS Chrome helper — controls the ALREADY-RUNNING Chrome via AppleScript.
+# Never opens a new Chrome window or touches any profile directory.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _osa(*lines: str, timeout: int = 15) -> str:
+    """Run an AppleScript block and return stdout."""
+    args = ["osascript"]
+    for line in lines:
+        args += ["-e", line]
+    r = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+    return r.stdout.strip()
+
+
+def _osa_js(js: str, timeout: int = 15) -> str:
+    """Execute JavaScript in the active Chrome tab via AppleScript."""
+    safe = js.replace('"', '\\"')
+    return _osa(
+        'tell application "Google Chrome"',
+        'tell active tab of front window',
+        f'execute javascript "{safe}"',
+        'end tell',
+        'end tell',
+        timeout=timeout,
+    )
+
+
+class MacOSChromeSession:
+    """
+    Drop-in replacement for _BrowserSession on macOS when Chrome is the target.
+    All operations drive the existing running Chrome through AppleScript.
+    """
+
+    browser_name = "chrome"
+
+    def start(self):
+        pass  # nothing to start — Chrome is already running
+
+    def close(self):
+        pass  # don't close the user's Chrome
+
+    def run(self, result):
+        """Compatibility shim — MacOSChromeSession methods return values directly."""
+        return result
+
+    # ── navigation ──────────────────────────────────────────────────────────
+
+    def go_to(self, url: str) -> str:
+        url = _normalize_url(url)
+        try:
+            _osa(
+                'tell application "Google Chrome"',
+                'activate',
+                f'open location "{url}"',
+                'end tell',
+            )
+            import time; time.sleep(3)
+            current = _osa(
+                'tell application "Google Chrome"',
+                'get URL of active tab of front window',
+                'end tell',
+            )
+            # Always read the page so the AI knows the current state
+            page_text = self.get_text()
+            state     = _summarise_page_state(current or url, page_text)
+            return f"Opened: {current or url}\nPage state: {state}"
+        except Exception as e:
+            return f"Could not open {url}: {e}"
+
+    def search(self, query: str, engine: str = "google") -> str:
+        engines = {
+            "google":     "https://www.google.com/search?q=",
+            "bing":       "https://www.bing.com/search?q=",
+            "duckduckgo": "https://duckduckgo.com/?q=",
+        }
+        base = engines.get(engine.lower(), engines["google"])
+        return self.go_to(base + query.replace(" ", "+"))
+
+    def get_url(self) -> str:
+        try:
+            return _osa(
+                'tell application "Google Chrome"',
+                'get URL of active tab of front window',
+                'end tell',
+            )
+        except Exception as e:
+            return f"Error: {e}"
+
+    # ── content ─────────────────────────────────────────────────────────────
+
+    def get_text(self) -> str:
+        try:
+            # Use clipboard (select-all + copy) — works without JS Apple Events permission
+            result = _osa(
+                'tell application "Google Chrome"',
+                'activate',
+                'end tell',
+                'delay 0.4',
+                'tell application "System Events"',
+                'keystroke "a" using {command down}',
+                'end tell',
+                'delay 0.3',
+                'tell application "System Events"',
+                'keystroke "c" using {command down}',
+                'end tell',
+                'delay 0.3',
+                'return (do shell script "pbpaste")',
+                timeout=15,
+            )
+            return result[:6000] if result else "No text found."
+        except Exception as e:
+            return f"Error reading page: {e}"
+
+    # ── interaction ─────────────────────────────────────────────────────────
+
+    def click(self, selector: str = None, text: str = None) -> str:
+        try:
+            if text:
+                js = (
+                    f"var els=document.querySelectorAll('a,button,[role=button],[role=link]');"
+                    f"for(var i=0;i<els.length;i++){{"
+                    f"if(els[i].innerText.toLowerCase().includes('{text.lower()}'))"
+                    f"{{els[i].click();break;}}}}"
+                )
+            elif selector:
+                js = f"document.querySelector('{selector}').click();"
+            else:
+                return "No selector or text provided."
+            _osa_js(js)
+            return f"Clicked: {text or selector}"
+        except Exception as e:
+            return f"Click error: {e}"
+
+    def smart_click(self, description: str) -> str:
+        result = self.click(text=description)
+        import time; time.sleep(1.5)
+        # Re-read page so AI knows what happened after the click
+        page_text = self.get_text()
+        url       = self.get_url()
+        state     = _summarise_page_state(url, page_text)
+        return f"{result} → Page now: {state}"
+
+    def type_text(self, selector: str = None, text: str = "", clear_first: bool = True) -> str:
+        try:
+            clear = f"document.querySelector('{selector}').value='';" if clear_first and selector else ""
+            target = f"document.querySelector('{selector}')" if selector else "document.activeElement"
+            js = f"{clear}{target}.focus();{target}.value={repr(text)};"
+            _osa_js(js)
+            return "Text typed."
+        except Exception as e:
+            return f"Type error: {e}"
+
+    def smart_type(self, description: str, text: str) -> str:
+        js = (
+            f"var inp=document.querySelector('input[placeholder*=\"{description}\" i],"
+            f"input[aria-label*=\"{description}\" i],textarea[placeholder*=\"{description}\" i]');"
+            f"if(inp){{inp.focus();inp.value={repr(text)};}}"
+        )
+        try:
+            _osa_js(js)
+            return f"Typed into: {description}"
+        except Exception as e:
+            return f"Smart type error: {e}"
+
+    def scroll(self, direction: str = "down", amount: int = 500) -> str:
+        y = amount if direction == "down" else -amount
+        x = amount if direction == "right" else (-amount if direction == "left" else 0)
+        try:
+            _osa_js(f"window.scrollBy({x},{y});")
+            return f"Scrolled {direction}."
+        except Exception as e:
+            return f"Scroll error: {e}"
+
+    def press(self, key: str) -> str:
+        key_map = {"Enter": "return", "Escape": "escape", "Tab": "tab",
+                   "ArrowUp": "up arrow", "ArrowDown": "down arrow",
+                   "ArrowLeft": "left arrow", "ArrowRight": "right arrow",
+                   "Backspace": "delete"}
+        osa_key = key_map.get(key, key.lower())
+        try:
+            _osa(
+                'tell application "System Events"',
+                f'key code 0',   # placeholder — use keystroke for letters
+                'end tell',
+            )
+            _osa(
+                'tell application "System Events"',
+                f'keystroke "{osa_key}"',
+                'end tell',
+            ) if len(osa_key) == 1 else _osa(
+                'tell application "Google Chrome"',
+                'activate',
+                'end tell',
+            )
+            return f"Pressed: {key}"
+        except Exception as e:
+            return f"Press error: {e}"
+
+    # ── tabs ────────────────────────────────────────────────────────────────
+
+    def new_tab(self, url: str = "") -> str:
+        try:
+            _osa(
+                'tell application "Google Chrome"',
+                'tell front window',
+                'make new tab',
+                'end tell',
+                'end tell',
+            )
+            import time; time.sleep(0.5)
+            if url:
+                return self.go_to(url)
+            return "New tab opened."
+        except Exception as e:
+            return f"New tab error: {e}"
+
+    def close_tab(self) -> str:
+        try:
+            _osa(
+                'tell application "Google Chrome"',
+                'tell front window',
+                'close active tab',
+                'end tell',
+                'end tell',
+            )
+            return "Tab closed."
+        except Exception as e:
+            return f"Close tab error: {e}"
+
+    def back(self) -> str:
+        try:
+            _osa_js("history.back();")
+            return "Navigated back."
+        except Exception as e:
+            return f"Back error: {e}"
+
+    def forward(self) -> str:
+        try:
+            _osa_js("history.forward();")
+            return "Navigated forward."
+        except Exception as e:
+            return f"Forward error: {e}"
+
+    def reload(self) -> str:
+        try:
+            _osa_js("location.reload();")
+            return "Page reloaded."
+        except Exception as e:
+            return f"Reload error: {e}"
+
+    def close_browser(self) -> str:
+        return "Cannot close your Chrome, sir. Use 'close tab' instead."
+
+    def screenshot(self, path: str = None) -> str:
+        save = path or str(Path.home() / "Desktop" / "jarvis_screenshot.png")
+        try:
+            subprocess.run(["screencapture", "-w", save], timeout=15)
+            return f"Screenshot saved: {save}"
+        except Exception as e:
+            return f"Screenshot error: {e}"
+
+    def fill_form(self, fields: dict) -> str:
+        results = []
+        for selector, value in fields.items():
+            r = self.type_text(selector, str(value))
+            results.append(f"✓ {selector}" if "typed" in r.lower() else f"✗ {selector}")
+        return "Form filled: " + ", ".join(results)
+
+    # ── profile switching ────────────────────────────────────────────────────
+
+    def list_profiles(self) -> str:
+        profiles = _get_chrome_profiles()
+        if not profiles:
+            return "No Chrome profiles found."
+        lines = [f"  {k}: {v['name']}" + (f" ({v['email']})" if v.get("email") else "")
+                 for k, v in profiles.items()]
+        return "Chrome profiles:\n" + "\n".join(lines)
+
+    def switch_profile(self, name_or_email: str) -> str:
+        profiles = _get_chrome_profiles()
+        target_key = None
+        q = name_or_email.lower().strip()
+        for key, info in profiles.items():
+            if q in info.get("name", "").lower() or q in info.get("email", "").lower():
+                target_key = key
+                break
+        if not target_key:
+            names = [f"{v['name']}" + (f"/{v['email']}" if v.get("email") else "") for v in profiles.values()]
+            return f"Profile '{name_or_email}' not found. Available: {', '.join(names)}"
+        import subprocess
+        subprocess.Popen(["open", "-a", "Google Chrome", "--args",
+                          f"--profile-directory={target_key}"])
+        import time; time.sleep(2)
+        return f"Switched to Chrome profile: {profiles[target_key]['name']}"
+
+    # ── self-healing ─────────────────────────────────────────────────────────
+
+    def heal(self, goal: str, speak=None, context: str = "") -> str:
+        """
+        When stuck, take a screenshot, analyse with Gemini Vision, try to fix,
+        and remember the solution for next time.
+        """
+        try:
+            from agents.browser_agent.self_healer import heal as _heal
+            return _heal(goal=goal, session=self, speak=speak, context=context)
+        except Exception as e:
+            return f"Healer error: {e}"
+
+    def list_sessions(self) -> str:
+        return "Using existing Chrome window (macOS AppleScript mode)."
+
+
+def _summarise_page_state(url: str, page_text: str) -> str:
+    """
+    Quickly classify what's on screen so the AI knows exactly where it is
+    and what to do next — no screenshot needed, works from page text alone.
+    """
+    text  = page_text.lower()[:3000]
+    url_l = url.lower()
+
+    # ── Known page patterns → instant classification ──────────────────────
+    if any(x in text for x in ["sign in", "log in", "enter your password", "enter your email"]):
+        return "LOGIN PAGE — user must sign in before proceeding."
+
+    if any(x in text for x in ["verify it's you", "two-step verification", "enter the code", "verification code"]):
+        return "2FA/OTP PAGE — waiting for verification code from user."
+
+    if any(x in text for x in ["add a payment method", "billing account", "add credit or debit card",
+                                 "card number", "expiry date", "cvv"]):
+        return "PAYMENT/BILLING FORM — visible fields for card/billing details. Ask user for each field."
+
+    if "captcha" in text or "i'm not a robot" in text or "verify you are human" in text:
+        return "CAPTCHA PAGE — user must solve captcha manually."
+
+    if any(x in text for x in ["404", "page not found", "this page doesn't exist"]):
+        return "ERROR 404 — page not found. Try a different URL."
+
+    if any(x in text for x in ["access denied", "403 forbidden", "you don't have permission"]):
+        return "ACCESS DENIED — no permission to view this page."
+
+    if any(x in text for x in ["enable billing", "upgrade your account", "free trial", "choose a plan"]):
+        return "BILLING UPGRADE PAGE — option to enable/upgrade billing is visible."
+
+    if "console.cloud.google.com" in url_l:
+        if "billing" in url_l:
+            return "GOOGLE CLOUD BILLING PAGE — " + _extract_visible_buttons(page_text)
+        if "apis" in url_l:
+            return "GOOGLE CLOUD APIS PAGE — " + _extract_visible_buttons(page_text)
+        return "GOOGLE CLOUD CONSOLE — " + _extract_visible_buttons(page_text)
+
+    if "accounts.google.com" in url_l:
+        return "GOOGLE ACCOUNT PAGE — likely sign-in or OAuth consent."
+
+    if "mail.google.com" in url_l:
+        return "GMAIL INBOX — " + _extract_visible_buttons(page_text)
+
+    if "slack.com" in url_l:
+        return "SLACK — " + _extract_visible_buttons(page_text)
+
+    # ── Generic fallback: extract what's visible ───────────────────────────
+    buttons = _extract_visible_buttons(page_text)
+    heading = _first_heading(page_text)
+    return f"{heading}. Visible actions: {buttons}"
+
+
+def _extract_visible_buttons(text: str) -> str:
+    """Pull out likely button/link labels from page text."""
+    import re
+    # Look for short capitalised phrases that look like buttons
+    candidates = re.findall(r'\b([A-Z][A-Za-z ]{2,30})\b', text[:2000])
+    seen, result = set(), []
+    for c in candidates:
+        c = c.strip()
+        if c not in seen and len(c) > 3:
+            seen.add(c)
+            result.append(c)
+        if len(result) >= 6:
+            break
+    return ", ".join(result) if result else "no clear buttons detected"
+
+
+def _first_heading(text: str) -> str:
+    """Return first non-trivial line as a page title."""
+    for line in text.splitlines():
+        line = line.strip()
+        if len(line) > 8 and len(line) < 80:
+            return line
+    return "page loaded"
+
+
+def _get_chrome_profiles() -> dict:
+    """Read Chrome Local State and return {dir_key: {name, email}} for all profiles."""
+    import json
+    local_state = Path.home() / "Library" / "Application Support" / "Google" / "Chrome" / "Local State"
+    try:
+        data = json.loads(local_state.read_text(encoding="utf-8"))
+        info_cache = data.get("profile", {}).get("info_cache", {})
+        return {
+            key: {
+                "name":  info.get("name", key),
+                "email": info.get("user_name", ""),
+            }
+            for key, info in info_cache.items()
+        }
+    except Exception as e:
+        print(f"[Browser] profile read error: {e}")
+        return {}
+
+
 def _normalize_url(url: str) -> str:
     """
     Bare words like "instagram" → "https://instagram.com"
@@ -751,10 +1161,20 @@ class _SessionRegistry:
                 print(f"[Registry] New session: {browser_name}")
             return self._sessions[browser_name]
 
-    def get(self, browser_name: str | None = None) -> _BrowserSession:
+    def get(self, browser_name: str | None = None):
         if not browser_name:
             browser_name = self._active_browser or _detect_default_browser()
         browser_name = _ALIASES.get(browser_name.lower().strip(), browser_name.lower().strip())
+
+        # On macOS, always use the existing Chrome via AppleScript — never Playwright
+        if _OS == "Darwin" and browser_name == "chrome":
+            key = "__macos_chrome__"
+            with self._lock:
+                if key not in self._sessions:
+                    self._sessions[key] = MacOSChromeSession()
+                self._active_browser = browser_name
+                return self._sessions[key]
+
         sess = self._get_or_create(browser_name)
         self._active_browser = browser_name
         return sess
@@ -874,6 +1294,38 @@ def browser_control(
         elif action == "close":
             target = browser or _registry._active_browser
             result = _registry.close_one(target) if target else "No browser specified."
+
+        # ── new actions ──────────────────────────────────────────────────────
+        elif action in ("read_page", "get_text"):
+            result = sess.get_text()
+
+        elif action == "list_profiles":
+            if hasattr(sess, "list_profiles"):
+                result = sess.list_profiles()
+            else:
+                result = "Profile listing only supported in Chrome on macOS."
+
+        elif action == "switch_profile":
+            name = params.get("text") or params.get("profile") or ""
+            if not name:
+                if hasattr(sess, "list_profiles"):
+                    result = sess.list_profiles()
+                else:
+                    result = "Please specify a profile name."
+            elif hasattr(sess, "switch_profile"):
+                result = sess.switch_profile(name)
+            else:
+                result = "Profile switching only supported in Chrome on macOS."
+
+        elif action == "heal":
+            goal    = params.get("description") or params.get("goal") or "complete the current browser task"
+            context = params.get("context") or ""
+            speak   = getattr(player, "speak", None) if player else None
+            if hasattr(sess, "heal"):
+                result = sess.heal(goal=goal, speak=speak, context=context)
+            else:
+                result = "Self-healing only supported in Chrome on macOS."
+
         else:
             result = f"Unknown browser action: '{action}'"
 
