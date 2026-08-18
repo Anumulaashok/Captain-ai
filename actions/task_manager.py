@@ -193,10 +193,8 @@ def task_manager(parameters: dict, player=None, speak=None) -> str:
 
     elif action == "clear_all":
         if use_pg:
-            from integrations.pg_store import _get_conn
-            cur = _get_conn().cursor()
-            cur.execute("DELETE FROM jarvis_tasks")
-            cur.close()
+            from integrations.pg_store import clear_all_tasks
+            clear_all_tasks()
         _save_json([])
         return "All tasks cleared, sir."
 

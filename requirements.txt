@@ -1,24 +1,52 @@
-﻿sounddevice
-google-genai
-google-generativeai
-pillow
-requests
-beautifulsoup4
-duckduckgo-search
-playwright          
-pyautogui
-pyperclip
-pygetwindow       
-opencv-python
-numpy
-mss
-Pillow
-psutil
-comtypes
-pycaw               
-win10toast          
-send2trash
-youtube-transcript-api
-pywinauto
-python-pptx
-pyqt6
+# Core AI / Gemini
+google-genai==2.8.0
+google-generativeai==0.8.6
+
+# Voice
+sounddevice==0.5.5
+
+# UI
+pyqt6==6.11.0
+
+# Web / search / scraping
+requests==2.34.2
+beautifulsoup4==4.14.3
+ddgs==9.15.0
+duckduckgo-search==8.1.1
+playwright==1.60.0
+
+# Vision / screen / image
+pillow==12.2.0
+opencv-python==4.13.0.92
+numpy==2.4.6
+mss==10.2.0
+
+# Desktop automation
+pyautogui==0.9.54
+pyperclip==1.11.0
+pygetwindow==0.0.9
+psutil==7.2.2
+send2trash==2.1.0
+plyer==2.1.0
+
+# Document / media processing (actions/file_processor.py)
+pandas==3.0.5
+pdfplumber==0.11.10
+PyPDF2==3.0.1
+pydub==0.25.1
+python-docx==1.2.0
+python-pptx==1.0.2
+
+# Integrations (integrations/*.py)
+psycopg2-binary==2.9.12
+pinecone==9.1.0
+slack_sdk==3.42.0
+google-auth-oauthlib==1.4.0
+google-api-python-client==2.197.0
+youtube-transcript-api==1.2.4
+
+# Windows-only (see actions/computer_settings.py, actions/computer_control.py)
+comtypes==1.4.16; sys_platform == "win32"
+pycaw==20251023; sys_platform == "win32"
+win10toast==0.9; sys_platform == "win32"
+pywinauto==0.6.9; sys_platform == "win32"

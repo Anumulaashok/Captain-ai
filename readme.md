@@ -41,14 +41,53 @@ It's not just an assistant — it's an extension of your digital life.
 ## ⚡ Quick Start
 
 ```bash
-git clone https://github.com/FatihMakes/Mark-XXXIX.git
-cd Mark-XXXIX
+git clone https://github.com/Anumulaashok/Captain-ai.git
+cd Captain-ai
+python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 playwright install
 python main.py
 ```
 
-> ⚠️ **Installation Note:** To keep the repository lightweight, some OS-specific dependencies are not bundled in `requirements.txt`. If you run into a `ModuleNotFoundError`, simply install the missing package via `pip install <module_name>` for your specific system.
+`requirements.txt` is fully pinned and covers every package actually imported by the
+code, including document/media processing (pandas, pdfplumber, PyPDF2, pydub,
+python-docx) and integrations (psycopg2, pinecone, slack_sdk) that were previously
+missing entirely. Windows-only packages (comtypes, pycaw, win10toast, pywinauto) install
+automatically only on Windows via environment markers — nothing extra to do per OS.
+
+For development (tests, linting): `pip install -r requirements-dev.txt`.
+
+## 🔑 Configuration
+
+Required, at minimum:
+
+| File | Key | What it's for |
+|---|---|---|
+| `config/api_keys.json` | `gemini_api_key` | Every LLM call — planning, tool execution, voice. Get one free at [aistudio.google.com](https://aistudio.google.com/apikey). |
+
+Optional, per integration you want to enable (`config/integrations.json` — see
+`integrations/manager.py:INTEGRATIONS` for the full list; connect via the in-app
+`integration_setup` tool or by editing this file directly):
+
+| Integration | Required keys |
+|---|---|
+| Gmail | `google_client_id`, `google_client_secret` |
+| Slack | `slack_bot_token` (optional: `slack_default_channel`) |
+| GitHub | `github_token` (optional: `github_username`) |
+| Notion | `notion_token` |
+| Linear | `linear_api_key` |
+| Jira | `jira_url`, `jira_email`, `jira_api_token` |
+
+Optional, for persistent memory across sessions (falls back to local JSON files under
+`memory/` if not configured):
+
+| Service | Where it's read from |
+|---|---|
+| PostgreSQL (Neon or any Postgres) | `postgres` credential, `url` key — set via `integrations/manager.py` helpers |
+| Pinecone (semantic memory) | see `integrations/pinecone_memory.py` |
+
+None of these files are committed — `config/api_keys.json`, `config/integrations.json`,
+and `config/tokens/` are all gitignored.
 
 ---
 

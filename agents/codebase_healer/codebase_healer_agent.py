@@ -27,10 +27,36 @@ def _get_base_dir() -> Path:
 REPO_ROOT       = _get_base_dir()
 API_CONFIG_PATH = REPO_ROOT / "config" / "api_keys.json"
 
+# Sensitive paths self-heal must never touch, even if a hallucinated/prompt-injected
+# `problem`/`target_file` points at them. Being gitignored was accidentally catching
+# most of this before (git add silently no-ops, commit aborts) — that's a side effect,
+# not a designed control, so it's enforced explicitly here too.
+_DENYLIST_PARTS = {"config", "tokens", ".git", "venv", "__pycache__"}
+_DENYLIST_NAMES = {".env", "api_keys.json", "integrations.json"}
+
+# A legitimate bug fix rewrites a file, it doesn't gut it or 5x its size — this catches a
+# truncated/hallucinated rewrite before it's ever written to disk.
+_MAX_SHRINK_RATIO = 0.4   # fixed file must keep at least 40% of the original's length
+_MAX_GROWTH_RATIO = 3.0   # fixed file must not exceed 3x the original's length
+
 
 def _get_api_key() -> str:
     with open(API_CONFIG_PATH, "r", encoding="utf-8") as f:
         return json.load(f)["gemini_api_key"]
+
+
+def _is_sensitive_path(path: Path) -> bool:
+    parts = {p.lower() for p in path.parts}
+    if parts & _DENYLIST_PARTS:
+        return True
+    return path.name in _DENYLIST_NAMES
+
+
+def _diff_size_ok(original: str, fixed: str) -> bool:
+    if not original:
+        return True
+    ratio = len(fixed) / len(original)
+    return _MAX_SHRINK_RATIO <= ratio <= _MAX_GROWTH_RATIO
 
 
 class CodebaseHealerAgent:
@@ -89,12 +115,24 @@ class CodebaseHealerAgent:
                 self._say("Couldn't identify which file to fix, sir — give me a specific file path.", speak)
                 return
 
+            if _is_sensitive_path(path):
+                self._say(f"'{path.relative_to(REPO_ROOT)}' is off-limits for self-heal, sir — won't touch it.", speak)
+                return
+
             original = path.read_text(encoding="utf-8")
             self._say(f"Reading {path.relative_to(REPO_ROOT)}...", speak)
 
             fixed = self._propose_fix(problem, path, original)
             if not fixed or fixed.strip() == original.strip():
                 self._say("Couldn't come up with a confident fix, sir.", speak)
+                return
+
+            if not _diff_size_ok(original, fixed):
+                self._say(
+                    f"The proposed fix changes {path.name}'s size by too much to trust "
+                    "(likely a truncated or hallucinated rewrite) — not applying it, sir.",
+                    speak,
+                )
                 return
 
             path.write_text(fixed, encoding="utf-8")

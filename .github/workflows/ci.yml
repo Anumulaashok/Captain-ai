@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Compile-check the whole repo
+        run: python -m compileall -q .
+
+      - name: Install test dependencies
+        # Deliberately NOT installing the full requirements.txt here: everything under
+        # tests/ only exercises pure logic (permission gating, path safety, self-heal
+        # guards, session-log recording) that imports zero third-party packages at
+        # module scope. Keeps CI fast and avoids GUI/audio/browser system deps that
+        # have nothing to do with what these tests check.
+        run: pip install pytest==9.1.1
+
+      - name: Run tests
+        run: pytest -q

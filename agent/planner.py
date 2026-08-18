@@ -12,6 +12,7 @@ def get_base_dir() -> Path:
 
 BASE_DIR        = get_base_dir()
 API_CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
+GEMINI_TIMEOUT_S = 20  # planning/replanning had no timeout — a hung call stalled every task
 
 
 PLANNER_PROMPT = """You are the planning module of MARK XXV, a personal AI assistant.
@@ -227,7 +228,7 @@ def create_plan(goal: str, context: str = "") -> dict:
         user_input += f"\n\nContext: {context}"
 
     try:
-        response = model.generate_content(user_input)
+        response = model.generate_content(user_input, request_options={"timeout": GEMINI_TIMEOUT_S})
         text     = response.text.strip()
         text     = re.sub(r"```(?:json)?", "", text).strip().rstrip("`").strip()
 
@@ -304,7 +305,7 @@ Error: {error}
 Create a REVISED plan for the remaining work only. Do not repeat completed steps."""
 
     try:
-        response = model.generate_content(prompt)
+        response = model.generate_content(prompt, request_options={"timeout": GEMINI_TIMEOUT_S})
         text     = response.text.strip()
         text     = re.sub(r"```(?:json)?", "", text).strip().rstrip("`").strip()
         plan     = json.loads(text)
