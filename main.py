@@ -1177,6 +1177,9 @@ class JarvisLive:
         )
 
         while True:
+            if not self.ui.is_alive:
+                print("[JARVIS] 🛑 Window closed — stopping reconnect loop.")
+                return
             persona_switch = False
             try:
                 persona    = _get_active_persona()

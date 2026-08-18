@@ -1814,14 +1814,34 @@ class JarvisUI:
         self._win.on_text_command = cb
 
     def set_state(self, state: str):
-        self._win._state_sig.emit(state)
+        # The background voice loop (main.py JarvisLive.run) keeps calling this after
+        # the window is closed/restarted. Without this guard a single deleted-window
+        # moment turns into a tight exception loop — one incident produced 1M+
+        # exceptions and a 300MB+ log file. See core/session_recorder for how this
+        # was diagnosed from saved logs.
+        try:
+            self._win._state_sig.emit(state)
+        except RuntimeError:
+            pass
 
     def write_log(self, text: str):
-        self._win._log_sig.emit(text)
+        try:
+            self._win._log_sig.emit(text)
+        except RuntimeError:
+            pass
 
     def wait_for_api_key(self):
         while not self._win._ready:
             time.sleep(0.1)
+
+    @property
+    def is_alive(self) -> bool:
+        """False once the Qt window has been destroyed — background loops should stop."""
+        try:
+            self._win.isVisible()
+            return True
+        except RuntimeError:
+            return False
 
     @property
     def on_stop(self):

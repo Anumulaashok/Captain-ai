@@ -130,7 +130,19 @@ def _inject_context(params: dict, tool: str, step_results: dict, goal: str = "")
                 print(f"[Executor] 💉 Injected + translated content")
 
     return params
+def _is_probably_english(text: str) -> bool:
+    """Cheap ASCII heuristic — avoids a Gemini round-trip for the common English case."""
+    sample = text[:200]
+    if not sample:
+        return True
+    non_ascii = sum(1 for ch in sample if ord(ch) > 127)
+    return (non_ascii / len(sample)) < 0.05
+
+
 def _detect_language(text: str) -> str:
+    if _is_probably_english(text):
+        return "English"
+
     import google.generativeai as genai
     genai.configure(api_key=_get_api_key())
     model = genai.GenerativeModel("gemini-2.5-flash-lite")
@@ -148,12 +160,18 @@ def _detect_language(text: str) -> str:
 def _translate_to_goal_language(content: str, goal: str) -> str:
     if not goal:
         return content
+
+    target_lang = _detect_language(goal)
+    if target_lang == "English" and _is_probably_english(content):
+        # Skip the round-trip entirely when both goal and content are already English —
+        # this alone was costing ~9s per run for the (very common) English-only case.
+        return content
+
     try:
         import google.generativeai as genai
         genai.configure(api_key=_get_api_key())
         model = genai.GenerativeModel("gemini-2.5-flash")
 
-        target_lang = _detect_language(goal)
         print(f"[Executor] 🌐 Translating to: {target_lang}")
 
         prompt = (

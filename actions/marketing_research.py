@@ -57,9 +57,15 @@ def marketing_research(parameters: dict, player=None, speak=None) -> str:
     print(f"[Marketing] 🔍 Researching: {niche!r}")
 
     from actions.web_search import web_search
+    from concurrent.futures import ThreadPoolExecutor
 
-    pain_points = web_search({"query": f"{niche} frustrated complaints reddit"})
-    competitors = web_search({"query": f"best {niche} software SaaS app 2026"})
+    # These two searches are independent — run them in parallel instead of back-to-back
+    # (was costing ~10-20s of pure sequential wait per research call).
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        pain_future = pool.submit(web_search, {"query": f"{niche} frustrated complaints reddit"})
+        comp_future = pool.submit(web_search, {"query": f"best {niche} software SaaS app 2026"})
+        pain_points = pain_future.result()
+        competitors = comp_future.result()
 
     prompt = (
         "You are a product strategist. Based on the research below, propose 3 unique, "
