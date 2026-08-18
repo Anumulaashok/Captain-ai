@@ -294,6 +294,9 @@ class AgentExecutor:
     ) -> str:
         print(f"\n[Executor] 🎯 Goal: {goal}")
 
+        from core.session_recorder import start_run, end_run
+        run_id = start_run(goal)
+
         memory  = load_memory()
         context = format_memory_for_prompt(memory)
         plan    = create_plan(goal, context=context)
@@ -307,18 +310,22 @@ class AgentExecutor:
             if not steps:
                 msg = "I couldn't create a valid plan for this task, sir."
                 if speak: speak(msg)
+                end_run(run_id, "failed", msg, replan_attempts)
                 return msg
 
-            outcome = self._execute_parallel(steps, goal, speak, cancel_flag)
+            outcome = self._execute_parallel(steps, goal, speak, cancel_flag, run_id)
 
             if outcome["cancelled"]:
                 if speak: speak("Task cancelled, sir.")
+                end_run(run_id, "cancelled", "", replan_attempts)
                 return "Task cancelled."
 
             completed_steps = outcome["completed_steps"]
 
             if outcome["success"]:
-                return self._summarize(goal, completed_steps, speak)
+                summary = self._summarize(goal, completed_steps, speak)
+                end_run(run_id, "success", summary, replan_attempts)
+                return summary
 
             failed_step  = outcome["failed_step"]
             failed_error = outcome["failed_error"]
@@ -326,6 +333,7 @@ class AgentExecutor:
             if replan_attempts >= self.MAX_REPLAN_ATTEMPTS:
                 msg = f"Task failed after {replan_attempts} replan attempts, sir."
                 if speak: speak(msg)
+                end_run(run_id, "failed", msg, replan_attempts)
                 return msg
 
             if speak: speak("Adjusting my approach, sir.")
@@ -340,6 +348,7 @@ class AgentExecutor:
         goal:        str,
         speak:       Callable | None,
         cancel_flag: threading.Event | None,
+        run_id:      str = "",
     ) -> dict:
         """
         Run the plan steps in parallel where dependencies allow.
@@ -378,7 +387,7 @@ class AgentExecutor:
                         )
                         step_copy = {**step, "parameters": params}
                         future = pool.submit(
-                            self._run_step, step_copy, speak, cancel_flag
+                            self._run_step, step_copy, speak, cancel_flag, run_id
                         )
                         running[future] = step_num
                         newly_submitted.add(step_num)
@@ -441,8 +450,12 @@ class AgentExecutor:
         step:        dict,
         speak:       Callable | None,
         cancel_flag: threading.Event | None,
+        run_id:      str = "",
     ) -> str:
-        """Run a single step with up to 3 attempts and smart error recovery."""
+        """Run a single step with up to 3 attempts and smart error recovery.
+        Every attempt (success or failure) is recorded via core.session_recorder."""
+        from core.session_recorder import record_step
+
         tool     = step["tool"]
         params   = step["parameters"]
         step_num = step["step"]
@@ -450,12 +463,17 @@ class AgentExecutor:
         for attempt in range(1, 4):
             if cancel_flag and cancel_flag.is_set():
                 raise RuntimeError("Cancelled")
+            t0 = time.time()
             try:
                 result = _call_tool(tool, params, speak)
+                record_step(run_id, step_num, tool, params, True, result=str(result),
+                            duration_ms=int((time.time() - t0) * 1000))
                 return result or "Done."
 
             except Exception as e:
                 error_msg = str(e)
+                record_step(run_id, step_num, tool, params, False, error=error_msg,
+                            duration_ms=int((time.time() - t0) * 1000))
                 print(f"[Executor] ⚠️  Step {step_num} attempt {attempt} failed: {error_msg[:120]}")
 
                 recovery = analyze_error(step, error_msg, attempt=attempt)
@@ -481,7 +499,11 @@ class AgentExecutor:
                     try:
                         fixed_step = generate_fix(step, error_msg, fix_suggestion)
                         if speak: speak("Trying an alternative approach, sir.")
-                        return _call_tool(fixed_step["tool"], fixed_step["parameters"], speak) or "Done."
+                        t1 = time.time()
+                        fixed_result = _call_tool(fixed_step["tool"], fixed_step["parameters"], speak)
+                        record_step(run_id, step_num, fixed_step["tool"], fixed_step["parameters"],
+                                    True, result=str(fixed_result), duration_ms=int((time.time() - t1) * 1000))
+                        return fixed_result or "Done."
                     except Exception as fix_err:
                         print(f"[Executor] ⚠️ Fix attempt failed: {fix_err}")
 

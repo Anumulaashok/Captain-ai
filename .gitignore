@@ -21,4 +21,6 @@ config/tokens/
 # Memory / state
 memory/long_term.json
 memory/tasks.json
+memory/session_log.jsonl
 core/active_persona.json
+config/app_settings.json

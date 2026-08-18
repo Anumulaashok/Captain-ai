@@ -1106,6 +1106,8 @@ class MainWindow(QMainWindow):
         self.on_restart       = None
         self._muted           = False
         self._current_file: str | None = None
+        from core.session_settings import is_save_logs_enabled
+        self._logs_enabled    = is_save_logs_enabled()
 
         central = QWidget()
         central.setStyleSheet(f"background: {C.BG};")
@@ -1477,6 +1479,20 @@ class MainWindow(QMainWindow):
         fs_btn.clicked.connect(self._toggle_fullscreen)
         lay.addWidget(fs_btn)
 
+        self._save_logs_btn = QPushButton()
+        self._save_logs_btn.setFixedHeight(26)
+        self._save_logs_btn.setFont(QFont("Courier New", 7))
+        self._save_logs_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._save_logs_btn.setCheckable(True)
+        self._save_logs_btn.setChecked(self._logs_enabled)
+        self._save_logs_btn.setToolTip(
+            "When ON, every task run and step attempt is saved (Postgres or a local log "
+            "file) so issues can be diagnosed later. Turn OFF to run without saving."
+        )
+        self._style_save_logs_btn()
+        self._save_logs_btn.clicked.connect(self._toggle_save_logs)
+        lay.addWidget(self._save_logs_btn)
+
         btn_row = QHBoxLayout(); btn_row.setSpacing(4)
 
         restart_btn = QPushButton("↺  RESTART")
@@ -1597,6 +1613,36 @@ class MainWindow(QMainWindow):
         else:
             self._apply_state("LISTENING")
             self._log.append_log("SYS: Microphone active.")
+
+    def _toggle_save_logs(self):
+        self._logs_enabled = not self._logs_enabled
+        from core.session_settings import set_save_logs_enabled
+        set_save_logs_enabled(self._logs_enabled)
+        self._style_save_logs_btn()
+        self._log.append_log(
+            f"SYS: Session logging {'enabled' if self._logs_enabled else 'disabled'}."
+        )
+
+    def _style_save_logs_btn(self):
+        self._save_logs_btn.setChecked(self._logs_enabled)
+        if self._logs_enabled:
+            self._save_logs_btn.setText("💾  SAVE LOGS: ON")
+            self._save_logs_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: transparent; color: {C.GREEN};
+                    border: 1px solid {C.GREEN}; border-radius: 3px;
+                }}
+                QPushButton:hover {{ background: #001f10; }}
+            """)
+        else:
+            self._save_logs_btn.setText("💾  SAVE LOGS: OFF")
+            self._save_logs_btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: transparent; color: {C.TEXT_MED};
+                    border: 1px solid {C.BORDER}; border-radius: 3px;
+                }}
+                QPushButton:hover {{ color: {C.PRI}; border: 1px solid {C.BORDER_B}; }}
+            """)
 
     def _style_mute_btn(self):
         if self._muted:

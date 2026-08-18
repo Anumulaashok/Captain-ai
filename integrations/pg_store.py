@@ -64,6 +64,29 @@ def _init_schema(conn):
             last_ids    TEXT        DEFAULT '[]',
             updated_at  TIMESTAMPTZ DEFAULT NOW()
         );
+
+        CREATE TABLE IF NOT EXISTS jarvis_runs (
+            run_id        TEXT        PRIMARY KEY,
+            goal          TEXT        NOT NULL,
+            status        TEXT        DEFAULT 'running',
+            summary       TEXT,
+            replan_count  INTEGER     DEFAULT 0,
+            started_at    TIMESTAMPTZ DEFAULT NOW(),
+            ended_at      TIMESTAMPTZ
+        );
+
+        CREATE TABLE IF NOT EXISTS jarvis_steps (
+            id          SERIAL PRIMARY KEY,
+            run_id      TEXT        NOT NULL,
+            step_num    INTEGER,
+            tool        TEXT        NOT NULL,
+            parameters  TEXT,
+            success     BOOLEAN,
+            result      TEXT,
+            error       TEXT,
+            duration_ms INTEGER,
+            created_at  TIMESTAMPTZ DEFAULT NOW()
+        );
     """)
     cur.close()
 
@@ -197,6 +220,68 @@ def set_watcher_state(service: str, last_check: float, last_ids: list) -> None:
             SET last_check=EXCLUDED.last_check, last_ids=EXCLUDED.last_ids, updated_at=NOW()
     """, (service, last_check, json.dumps(last_ids)))
     cur.close()
+
+
+# ── Session recording (runs / steps) ────────────────────────────────────────
+
+def record_run_start(run_id: str, goal: str) -> None:
+    cur = _get_conn().cursor()
+    cur.execute(
+        "INSERT INTO jarvis_runs (run_id, goal) VALUES (%s, %s) "
+        "ON CONFLICT (run_id) DO NOTHING",
+        (run_id, goal),
+    )
+    cur.close()
+
+
+def record_run_end(run_id: str, status: str, summary: str = "", replan_count: int = 0) -> None:
+    cur = _get_conn().cursor()
+    cur.execute(
+        "UPDATE jarvis_runs SET status=%s, summary=%s, replan_count=%s, ended_at=NOW() WHERE run_id=%s",
+        (status, summary, replan_count, run_id),
+    )
+    cur.close()
+
+
+def record_step(
+    run_id: str, step_num: int, tool: str, parameters: dict,
+    success: bool, result: str = "", error: str = "", duration_ms: int = 0,
+) -> None:
+    cur = _get_conn().cursor()
+    cur.execute(
+        "INSERT INTO jarvis_steps (run_id, step_num, tool, parameters, success, result, error, duration_ms) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+        (run_id, step_num, tool, json.dumps(parameters, default=str), success,
+         (result or "")[:1000], (error or "")[:1000], duration_ms),
+    )
+    cur.close()
+
+
+def get_recent_failures(tool: Optional[str] = None, hours: int = 24, limit: int = 20) -> list[dict]:
+    cur = _get_conn().cursor()
+    # `hours` is always an internally-controlled int (never raw user text), so it's safe
+    # to interpolate directly — psycopg2 can't parameterize %s inside an INTERVAL literal.
+    query = (
+        "SELECT run_id, step_num, tool, parameters, result, error, duration_ms, created_at "
+        f"FROM jarvis_steps WHERE success = FALSE AND created_at >= NOW() - INTERVAL '{int(hours)} hours'"
+    )
+    args: list = []
+    if tool:
+        query += " AND tool = %s"
+        args.append(tool)
+    query += " ORDER BY created_at DESC LIMIT %s"
+    args.append(limit)
+    cur.execute(query, args)
+    rows = cur.fetchall()
+    cur.close()
+    return [
+        {
+            "run_id": r[0], "step": r[1], "tool": r[2],
+            "parameters": json.loads(r[3]) if r[3] else {},
+            "result": r[4], "error": r[5], "duration_ms": r[6], "ts": str(r[7]),
+        }
+        for r in rows
+    ]
 
 
 def is_ready() -> bool:
